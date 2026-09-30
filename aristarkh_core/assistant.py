@@ -150,7 +150,7 @@ class AssistantService:
             "=== КОНЕЦ ТРАНСКРИПТА ===\n"
             "Опираясь на свой системный промпт (5 блоков), проанализируй этот диалог и предложи ровно 1 следующий меткий вопрос от лица КЛИЕНТА к АРИСТАРХУ.\n\n"
             "КРИТИЧЕСКИ ВАЖНО: Твой ответ должен состоять ТОЛЬКО из текста вопроса. "
-            "Он ДОЛЖЕН начинаться со слова 'Аристарх,'. Никаких рассуждений, никаких 'Вот мой вариант'!"
+            "Он ДОЛЖЕН быть на языке диалога клиента и начинаться с обращения 'Аристарх,' (по-русски) или 'Aristarkh,' (по-английски). Никаких рассуждений, никаких 'Вот мой вариант'!"
         )
 
         url = f"https://generativelanguage.googleapis.com/v1beta/{self.model}:generateContent?key={self.api_key}"
@@ -179,8 +179,10 @@ class AssistantService:
                         suggestion_text = suggestion_text.replace('**', '').replace('*', '')
                         
                         # Жестко обрубаем все, что идет ДО слова "Аристарх"
-                        if "Аристарх," in suggestion_text:
-                            suggestion_text = "Аристарх," + suggestion_text.split("Аристарх,", 1)[1]
+                        for address in ("Аристарх,", "Aristarkh,"):
+                            if address in suggestion_text:
+                                suggestion_text = address + suggestion_text.split(address, 1)[1]
+                                break
                             
                         return suggestion_text.strip()
                 else:

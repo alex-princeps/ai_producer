@@ -12,15 +12,16 @@ __pycache__/
 # macOS
 .DS_Store
 
-# Секреты — никогда не коммитить
+# Secrets: never commit
 .env
 .env.*
 !template.env
 *.session
+*.swp
 *.session-journal
 promo_users.json
 
-# Базы данных и векторные индексы
+# Databases and vector indexes
 *.db
 *.sqlite3
 aristarkh_core/chroma_db/
@@ -36,14 +37,14 @@ research_papers/
 # Russian docs are kept locally only
 *.ru.md
 
-# Состояние бота во время работы (создаётся автоматически)
+# Runtime state (created automatically)
 aristarkh_core/semantic_memory.json
 aristarkh_core/aristarkh_agenda.json
 aristarkh_core/aristarkh_core_beliefs.json
 tg_news.json
 news_module/tg_news.json
 
-# Логи и бэкапы
+# Logs and backups
 *.log
 *.err
 backups/

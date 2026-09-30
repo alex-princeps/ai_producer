@@ -96,15 +96,36 @@ user_message_buffers = {}
 user_image_buffers = {}
 
 # --- KEYBOARDS ---
-main_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="⭐️ Баланс"), KeyboardButton(text="☕️ Перекур")]
-], resize_keyboard=True)
+def main_kb(lang: str) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[[
+        KeyboardButton(text=i18n.get_text("btn_settings", lang)),
+        KeyboardButton(text=i18n.get_text("btn_balance", lang)),
+        KeyboardButton(text=i18n.get_text("btn_rest", lang)),
+    ]], resize_keyboard=True)
 
-cancel_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="🔙 В главное меню")]], resize_keyboard=True)
 
-long_input_kb = ReplyKeyboardMarkup(keyboard=[
-    [KeyboardButton(text="done"), KeyboardButton(text="🔙 Отмена")]
-], resize_keyboard=True)
+def cancel_kb(lang: str) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=i18n.get_text("btn_main_menu", lang))]], resize_keyboard=True)
+
+
+def long_input_kb(lang: str) -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(keyboard=[[
+        KeyboardButton(text=i18n.get_text("btn_done", lang)),
+        KeyboardButton(text=i18n.get_text("btn_cancel", lang)),
+    ]], resize_keyboard=True)
+
+
+def settings_kb(t: float, lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{'✅ ' if t==0.2 else ''}{i18n.get_text('temp_dry', lang)}", callback_data="temp_0.2")],
+        [InlineKeyboardButton(text=f"{'✅ ' if t==0.7 else ''}{i18n.get_text('temp_norm', lang)}", callback_data="temp_0.7")],
+        [InlineKeyboardButton(text=f"{'✅ ' if t==1.3 else ''}{i18n.get_text('temp_boom', lang)}", callback_data="temp_1.3")],
+        [InlineKeyboardButton(text=i18n.get_text("btn_reset_context", lang), callback_data="reset_context")]
+    ])
+
+
+MENU_BUTTONS = i18n.variants("btn_settings") | i18n.variants("btn_balance") | i18n.variants("btn_rest")
+DONE_WORDS = {"все", "всё", "done", "готово"} | {v.lower() for v in i18n.variants("btn_done")}
 
 # --- UTILS: TEXT EXTRACTOR ---
 async def extract_text_from_file(file_path: str, ext: str) -> str:
@@ -153,7 +174,7 @@ async def send_smart_response(message: types.Message, text: str):
         try:
             await message.answer_document(
                 FSInputFile(filename), 
-                caption="📜 Ответ получился слишком большим, прикладываю файлом."
+                caption=i18n.get_text("file_too_big", i18n.user_lang(message.from_user))
             )
         finally:
             if os.path.exists(filename):
@@ -166,7 +187,7 @@ async def send_smart_response(message: types.Message, text: str):
             await message.answer(text, parse_mode=None)
         except Exception as e:
             logger.error(f"Send error: {e}")
-            await message.answer(i18n.get_text("error_sending"))
+            await message.answer(i18n.get_text("error_sending", i18n.user_lang(message.from_user)))
 
 # --- [NEW] DEBOUNCE TRIGGER TASK ---
 async def trigger_processing(message: types.Message, state: FSMContext, user_id: int):
@@ -210,29 +231,27 @@ async def cmd_start(message: types.Message, state: FSMContext):
         except Exception as e:
             logger.error(f"Не удалось отправить уведомление админу: {e}")
     
-    welcome_text = i18n.get_text("start_message")
+    lang = i18n.user_lang(message.from_user)
+    welcome_text = i18n.get_text("start_message", lang)
     await state.set_state(BotStates.chatting)
     await state.update_data(interaction_count=0)
-    await message.answer(welcome_text, reply_markup=main_kb, parse_mode="Markdown")
+    await message.answer(welcome_text, reply_markup=main_kb(lang), parse_mode="Markdown")
 
 # --- HANDLER: ПЕРЕКУР (AFFECTIVE MEMORY RESET — ИСТОРИЯ НЕ СТИРАЕТСЯ) ---
-@dp.message(F.text == "☕️ Перекур")
+@dp.message(F.text.in_(i18n.variants("btn_rest")))
 async def cmd_rest(message: types.Message, state: FSMContext):
     await db_service.log_event(message.from_user.id, "REST_BUTTON_CLICKED")
     await db_service.reset_fatigue(message.from_user.id)
     
     logger.info(f"🚬 [СБРОС] Юзер {message.from_user.id} нажал 'Перекур'. Усталость обнулена, история диалога сохранена.")
     
-    await message.answer(
-        "🚬 *Аристарх налил себе виски и выдохнул.*\n\n"
-        "Ладно, проехали. Я физически остыл, но всё прекрасно помню. Давай по делу.",
-        parse_mode="Markdown"
-    )
+    await message.answer(i18n.get_text("rest_btn_clicked", i18n.user_lang(message.from_user)), parse_mode="Markdown")
 
 # --- HANDLERS: BALANCE & STARS ---
-@dp.message(F.text == "⭐️ Баланс")
+@dp.message(F.text.in_(i18n.variants("btn_balance")))
 async def show_balance(message: types.Message):
     await db_service.log_event(message.from_user.id, "CHECK_BALANCE")
+    lang = i18n.user_lang(message.from_user)
     
     user = await db_service.get_user(message.from_user.id)
     if not user:
@@ -246,17 +265,17 @@ async def show_balance(message: types.Message):
         user.expires_at = None
 
     if is_unlim:
-        unlim_str = "VIP Бессрочно (JSON)" if not user.unlimited_until else user.unlimited_until.strftime('%Y-%m-%d %H:%M')
-        text = f"💰 **Баланс:** ♾ БЕЗЛИМИТ (до {unlim_str})\n_Остаток обычных кредитов: {user.credits}_\n\nВыберите пакет, если хотите пополнить впрок:"
+        unlim_str = i18n.get_text("balance_unlim_forever", lang) if not user.unlimited_until else user.unlimited_until.strftime('%Y-%m-%d %H:%M')
+        text = i18n.get_text("balance_info_unlim", lang, unlim_str=unlim_str, credits=user.credits)
     else:
-        expiry_info = f"\nПодписка до: {user.expires_at.strftime('%Y-%m-%d %H:%M')}" if user.expires_at else ""
-        text = i18n.get_text("balance_info", credits=user.credits, expiry_info=expiry_info)
+        expiry_info = i18n.get_text("subscription_until", lang, date=user.expires_at.strftime('%Y-%m-%d %H:%M')) if user.expires_at else ""
+        text = i18n.get_text("balance_info", lang, credits=user.credits, expiry_info=expiry_info)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Пакет 10 запросов (1000 ⭐️)", callback_data="buy_10_0_1000")],
-        [InlineKeyboardButton(text="Подписка 7 дней / 25 зап. (2000 ⭐️)", callback_data="buy_25_7_2000")],
-        [InlineKeyboardButton(text="Подписка 30 дней / 100 зап. (5000 ⭐️)", callback_data="buy_100_30_5000")],
-        [InlineKeyboardButton(text="🎁 Ввести промокод", callback_data="enter_promo")]
+        [InlineKeyboardButton(text=i18n.get_text("pkg_10", lang), callback_data="buy_10_0_1000")],
+        [InlineKeyboardButton(text=i18n.get_text("pkg_7d", lang), callback_data="buy_25_7_2000")],
+        [InlineKeyboardButton(text=i18n.get_text("pkg_30d", lang), callback_data="buy_100_30_5000")],
+        [InlineKeyboardButton(text=i18n.get_text("btn_promo", lang), callback_data="enter_promo")]
     ])
     await message.answer(text, reply_markup=kb, parse_mode="Markdown")
 
@@ -264,15 +283,17 @@ async def show_balance(message: types.Message):
 async def enter_promo_handler(callback: types.CallbackQuery, state: FSMContext):
     await db_service.log_event(callback.from_user.id, "CLICK_PROMO_BTN")
     await state.set_state(BotStates.waiting_for_promo)
-    await callback.message.answer(i18n.get_text("promo_enter"), reply_markup=cancel_kb)
+    lang = i18n.user_lang(callback.from_user)
+    await callback.message.answer(i18n.get_text("promo_enter", lang), reply_markup=cancel_kb(lang))
     await callback.answer()
 
 @dp.message(BotStates.waiting_for_promo, F.text)
 async def process_promo(message: types.Message, state: FSMContext):
-    if message.text == "🔙 В главное меню":
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu"):
         await db_service.log_event(message.from_user.id, "CANCEL_PROMO_INPUT")
         await state.set_state(BotStates.chatting)
-        await message.answer(i18n.get_text("menu_return"), reply_markup=main_kb)
+        await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
         return
         
     if config.PROMO_CODE and message.text.strip().lower() == config.PROMO_CODE.lower():
@@ -280,25 +301,29 @@ async def process_promo(message: types.Message, state: FSMContext):
         success = await db_service.activate_promo(message.from_user.id, config.PROMO_HOURS)
         await state.set_state(BotStates.chatting)
         if success:
-            await message.answer(i18n.get_text("promo_success"), parse_mode="Markdown", reply_markup=main_kb)
+            await message.answer(i18n.get_text("promo_success", lang), parse_mode="Markdown", reply_markup=main_kb(lang))
         else:
-            await message.answer(i18n.get_text("promo_error"), reply_markup=main_kb)
+            await message.answer(i18n.get_text("promo_error", lang), reply_markup=main_kb(lang))
     else:
         await db_service.log_event(message.from_user.id, "ENTER_PROMO_FAIL", message.text)
         await state.set_state(BotStates.chatting)
-        await message.answer(i18n.get_text("promo_invalid"), reply_markup=main_kb)
+        await message.answer(i18n.get_text("promo_invalid", lang), reply_markup=main_kb(lang))
 
 @dp.callback_query(F.data.startswith("buy_"))
 async def buy_stars(callback: types.CallbackQuery):
     _, credits_amount, days, stars = callback.data.split("_")
     await db_service.log_event(callback.from_user.id, "CLICK_BUY_STARS", f"credits:{credits_amount}, days:{days}, stars:{stars}")
 
-    prices = [LabeledPrice(label=f"Оплата: {credits_amount} запросов", amount=int(stars))]
+    lang = i18n.user_lang(callback.from_user)
+    prices = [LabeledPrice(label=i18n.get_text("invoice_label", lang, credits=credits_amount), amount=int(stars))]
     
     await bot.send_invoice(
         chat_id=callback.from_user.id,
-        title="Услуги дядюшки Аристарха",
-        description=f"Начисление {credits_amount} запросов" + (f" на {days} дней" if int(days) > 0 else " навсегда"),
+        title=i18n.get_text("invoice_title", lang),
+        description=i18n.get_text(
+            "invoice_desc", lang, credits=credits_amount,
+            period=i18n.get_text("invoice_period_days", lang, days=days) if int(days) > 0 else i18n.get_text("invoice_period_forever", lang),
+        ),
         payload=callback.data, 
         provider_token="", 
         currency="XTR",
@@ -324,10 +349,10 @@ async def successful_payment(message: types.Message):
     await db_service.log_event(message.from_user.id, "PAYMENT_SUCCESS", f"stars:{amount_stars}, credits:{credits_to_add}, days:{add_days}")
     new_bal = await db_service.update_balance(message.from_user.id, credits_to_add, add_days)
     await db_service.add_stars_transaction(message.from_user.id, amount_stars, credits_to_add, charge_id)
-    await message.answer(i18n.get_text("payment_success", new_bal=new_bal))
+    await message.answer(i18n.get_text("payment_success", i18n.user_lang(message.from_user), new_bal=new_bal))
 
 # --- HANDLERS: SETTINGS & RESET CONTEXT ---
-@dp.message(F.text == "⚙️ Настройки")
+@dp.message(F.text.in_(i18n.variants("btn_settings")))
 async def settings(message: types.Message):
     await db_service.log_event(message.from_user.id, "OPEN_SETTINGS")
     
@@ -335,21 +360,14 @@ async def settings(message: types.Message):
     if not user:
         user = await db_service.create_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
         
-    t = user.temperature
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'✅ ' if t==0.2 else ''}🧊 Сухо (0.2)", callback_data="temp_0.2")],
-        [InlineKeyboardButton(text=f"{'✅ ' if t==0.7 else ''}🔥 Норма (0.7)", callback_data="temp_0.7")],
-        [InlineKeyboardButton(text=f"{'✅ ' if t==1.3 else ''}💥 Взрыв (1.3)", callback_data="temp_1.3")],
-        [InlineKeyboardButton(text="🗑 Сбросить контекст диалога", callback_data="reset_context")]
-    ])
-    await message.answer("Режим нейросети и память:", reply_markup=kb)
+    lang = i18n.user_lang(message.from_user)
+    await message.answer(i18n.get_text("settings_title", lang), reply_markup=settings_kb(user.temperature, lang))
 
 @dp.callback_query(F.data == "reset_context")
 async def reset_context_handler(callback: types.CallbackQuery, state: FSMContext):
     await db_service.log_event(callback.from_user.id, "RESET_CONTEXT")
     await state.update_data(history=[], interaction_count=0)
-    await callback.answer(i18n.get_text("memory_cleared"), show_alert=True)
+    await callback.answer(i18n.get_text("memory_cleared", i18n.user_lang(callback.from_user)), show_alert=True)
 
 @dp.callback_query(F.data.startswith("temp_"))
 async def set_temp(callback: types.CallbackQuery):
@@ -359,41 +377,36 @@ async def set_temp(callback: types.CallbackQuery):
     await db_service.log_event(user_id, "CHANGE_TEMP", str(t))
     await db_service.update_temp(user_id, t)
     
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{'✅ ' if t==0.2 else ''}🧊 Сухо (0.2)", callback_data="temp_0.2")],
-        [InlineKeyboardButton(text=f"{'✅ ' if t==0.7 else ''}🔥 Норма (0.7)", callback_data="temp_0.7")],
-        [InlineKeyboardButton(text=f"{'✅ ' if t==1.3 else ''}💥 Взрыв (1.3)", callback_data="temp_1.3")],
-        [InlineKeyboardButton(text="🗑 Сбросить контекст диалога", callback_data="reset_context")]
-    ])
-    
+    lang = i18n.user_lang(callback.from_user)
     try:
-        await callback.message.edit_text("Режим нейросети и память:", reply_markup=kb)
+        await callback.message.edit_text(i18n.get_text("settings_title", lang), reply_markup=settings_kb(t, lang))
     except TelegramBadRequest:
         pass
         
-    await callback.answer(i18n.get_text("temp_applied"))
+    await callback.answer(i18n.get_text("temp_applied", lang))
 
 # --- [NEW] ЗАЩИТА ОТ ПУЛЕМЕТА ВО ВРЕМЯ ГЕНЕРАЦИИ ---
 @dp.message(BotStates.generating)
 async def generating_handler(message: types.Message):
     await db_service.log_event(message.from_user.id, "SPAM_BLOCKED")
-    await message.answer(i18n.get_text("wait_analyzing"))
+    await message.answer(i18n.get_text("wait_analyzing", i18n.user_lang(message.from_user)))
 
 # --- HANDLERS: CHAT LOGIC (TEXT, PHOTO, DOCS) ---
 @dp.message(BotStates.chatting, F.text | F.photo | F.document)
 async def chat_handler(message: types.Message, state: FSMContext):
-    if message.text == "🔙 В главное меню":
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu"):
         await db_service.log_event(message.from_user.id, "RETURN_TO_MAIN_MENU")
         await cmd_start(message, state)
         return
-    if message.text in ["⚙️ Настройки", "⭐️ Баланс", "☕️ Перекур"]: return
+    if message.text in MENU_BUTTONS: return
 
     # ╔══════════════════════════════════════════════════════════════╗
     # ║  [NEW] БИФУРКАЦИЯ: ПУБЛИКАЦИИ В КАНАЛ (DeusExMedia / @info_junk)
     # ╚══════════════════════════════════════════════════════════════╝
     if message.text and message.text.startswith("[ПУБЛИКАЦИЯ В КАНАЛ]"):
         await db_service.log_event(message.from_user.id, "CHANNEL_POST_REQUEST")
-        wait_msg = await message.answer(i18n.get_text("wait_writing_post"))
+        wait_msg = await message.answer(i18n.get_text("wait_writing_post", lang))
         
         news_text = message.text.replace("[ПУБЛИКАЦИЯ В КАНАЛ]", "").strip()
         url = extract_url(news_text)
@@ -415,12 +428,12 @@ async def chat_handler(message: types.Message, state: FSMContext):
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
 
-            await wait_msg.edit_text(f"✅ Пост опубликован в {CHANNEL_ID} (формат: {post_meta['format']}).")
+            await wait_msg.edit_text(i18n.get_text("post_published", lang, channel=CHANNEL_ID, fmt=post_meta['format']))
             await db_service.log_event(message.from_user.id, "CHANNEL_POST_PUBLISHED", f"channel:{CHANNEL_ID}, chars:{len(channel_post)}, format:{post_meta['format']}")
         except Exception as e:
             logger.error(f"Channel post error: {e}")
             await db_service.log_event(message.from_user.id, "CHANNEL_POST_ERROR", str(e))
-            await wait_msg.edit_text(f"❌ Ошибка при публикации поста: {e}")
+            await wait_msg.edit_text(i18n.get_text("post_error", lang, error=e))
         return
 
     event_type = "INCOMING_REQUEST_TEXT"
@@ -433,7 +446,7 @@ async def chat_handler(message: types.Message, state: FSMContext):
     file_context = ""
 
     if message.photo:
-        wait_msg = await message.answer(i18n.get_text("wait_looking_pic"))
+        wait_msg = await message.answer(i18n.get_text("wait_looking_pic", lang))
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         downloaded_file = await bot.download_file(file_info.file_path)
@@ -452,10 +465,10 @@ async def chat_handler(message: types.Message, state: FSMContext):
         await db_service.log_event(message.from_user.id, "FILE_UPLOAD", ext)
 
         if ext not in supported_exts:
-            await message.answer(i18n.get_text("unsupported_format", ext=ext))
+            await message.answer(i18n.get_text("unsupported_format", lang, ext=ext))
             return
 
-        wait_msg = await message.answer(i18n.get_text("wait_reading_doc", ext=ext))
+        wait_msg = await message.answer(i18n.get_text("wait_reading_doc", lang, ext=ext))
         file_info = await bot.get_file(doc.file_id)
         
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
@@ -468,7 +481,7 @@ async def chat_handler(message: types.Message, state: FSMContext):
                 file_context = f"\n\n[СОДЕРЖИМОЕ ПРИКРЕПЛЕННОГО ФАЙЛА {doc.file_name}]:\n{extracted_text[-30000:]}"
             else:
                 await db_service.log_event(message.from_user.id, "FILE_PARSE_EMPTY", ext)
-                await message.answer(i18n.get_text("extract_error"))
+                await message.answer(i18n.get_text("extract_error", lang))
                 return
         finally:
             if os.path.exists(temp_path):
@@ -482,12 +495,7 @@ async def chat_handler(message: types.Message, state: FSMContext):
         await db_service.log_event(message.from_user.id, "LONG_INPUT_TRIGGERED")
         await state.update_data(text_buffer=user_query, img_buffer=image_data)
         await state.set_state(BotStates.waiting_for_long_input)
-        await message.answer(
-            "📚 Ну ты Лев Толстой, цельный роман мне заряжаешь!\n"
-            "Я перешел в режим накопления. Если это всё — напиши **все**.\n"
-            "Если есть продолжение — кидай следующим сообщением.", 
-            reply_markup=long_input_kb, parse_mode="Markdown"
-        )
+        await message.answer(i18n.get_text("long_input_mode", lang), reply_markup=long_input_kb(lang), parse_mode="Markdown")
         return
 
     # === [NEW] БУФЕРИЗАЦИЯ И DEBOUNCE ===
@@ -510,13 +518,14 @@ async def chat_handler(message: types.Message, state: FSMContext):
 @dp.message(BotStates.waiting_for_long_input)
 async def long_input_handler(message: types.Message, state: FSMContext):
     data = await state.get_data()
+    lang = i18n.user_lang(message.from_user)
     
-    if message.text and message.text.lower() == "все":
+    if message.text and message.text.strip().lower() in DONE_WORDS:
         await db_service.log_event(message.from_user.id, "LONG_INPUT_FINISHED")
         full_text = data.get("text_buffer", "")
         img_data = data.get("img_buffer", None)
         
-        await message.answer(i18n.get_text("doc_accepted"), reply_markup=main_kb)
+        await message.answer(i18n.get_text("doc_accepted", lang), reply_markup=main_kb(lang))
         await state.update_data(text_buffer="", img_buffer=None)
         
         await state.set_state(BotStates.generating)
@@ -527,11 +536,11 @@ async def long_input_handler(message: types.Message, state: FSMContext):
             if current_state == BotStates.generating.state:
                 await state.set_state(BotStates.chatting)
         return
-    elif message.text == "🔙 Отмена":
+    elif message.text in i18n.variants("btn_cancel"):
         await db_service.log_event(message.from_user.id, "LONG_INPUT_CANCELLED")
         await state.update_data(text_buffer="", img_buffer=None)
         await state.set_state(BotStates.chatting)
-        await message.answer("Отменено.", reply_markup=main_kb)
+        await message.answer(i18n.get_text("cancelled", lang), reply_markup=main_kb(lang))
         return
 
     await db_service.log_event(message.from_user.id, "LONG_INPUT_APPEND")
@@ -541,6 +550,7 @@ async def long_input_handler(message: types.Message, state: FSMContext):
 
 
 async def process_ai_response(message: types.Message, state: FSMContext, user_query: str, image_data: dict = None):
+    lang = i18n.user_lang(message.from_user)
     user = await db_service.get_user(message.from_user.id)
     if not user:
         user = await db_service.create_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
@@ -552,13 +562,13 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         
         if user.credits < 1:
             await db_service.log_event(message.from_user.id, "OUT_OF_CREDITS")
-            msg = "⚠️ Недостаточно кредитов. Пополните баланс."
+            msg = i18n.get_text("no_credits", lang)
             if expired:
-                msg = "⌛️ Ваша подписка истекла. Пожалуйста, пополните баланс."
+                msg = i18n.get_text("subscription_expired", lang)
             await message.answer(msg)
             return
 
-    wait_msg = await message.answer(i18n.get_text("wait_thinking"))
+    wait_msg = await message.answer(i18n.get_text("wait_thinking", lang))
 
     logger.info(f"📥 [USER {message.from_user.id}]: {user_query[:500]}...")
     await db_service.log_event(message.from_user.id, "USER_MESSAGE", user_query[:4000])
@@ -751,7 +761,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         await db_service.log_event(message.from_user.id, "AI_RESPONSE_GENERATED", f"chars:{len(response_text)}")
     except Exception as e:
         logger.error(f"Gen Error: {e}")
-        response_text = "⚠️ Ошибка генерации. Попробуй позже."
+        response_text = i18n.get_text("generation_error", lang)
         await db_service.log_event(message.from_user.id, "AI_RESPONSE_ERROR", str(e))
 
     try:
@@ -789,11 +799,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         suggestion = await assistant_service.generate_suggestion(new_history[-40:])
         if suggestion:
             clean_suggestion = html.escape(suggestion.strip())
-            suggestion_msg = (
-                f"💡 <b>Подсказка ассистента</b> ➡️ Вам может быть интересно уточнить у мэтра "
-                f"(кликните по тексту ниже, чтобы скопировать):\n\n"
-                f"<code>{clean_suggestion}</code>"
-            )
+            suggestion_msg = i18n.get_text("assistant_hint", lang, text=clean_suggestion)
             await message.answer(suggestion_msg, parse_mode="HTML")
             await db_service.log_event(message.from_user.id, "ASSISTANT_SUGGESTION_SENT", suggestion)
     except Exception as e:

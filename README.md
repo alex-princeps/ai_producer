@@ -4,7 +4,7 @@ A Telegram-native character agent: a cynical 55-year-old TV showrunner who has h
 
 It is not a chatbot with a long system prompt. Every message goes through a small **cognitive loop**: affective state update → decision about grounding → parallel recall from three memory layers → situational self-awareness → a private inner monologue → a reply that acts on that monologue without ever quoting it. While nobody is writing, he **lives**: reads the news, forms a thesis of the day, writes columns, sleeps, consolidates memory and slowly evolves his beliefs.
 
-> The persona speaks Russian; the architecture is language-agnostic. Live channel (in Russian): [@info_junk](https://t.me/info_junk).
+> Aristarkh speaks Russian by default and switches to your language: write to him in English and he answers in English, with a Russian word or two for flavor. The interface follows your Telegram language. His channel posts in Russian: [@info_junk](https://t.me/info_junk).
 
 ![Architecture](docs/architecture.svg)
 
@@ -40,6 +40,7 @@ It is not a chatbot with a long system prompt. Every message goes through a smal
 | **Autonomous life** | Morning agenda from the news with a self-assessed strength 0–10; nightly reflection and memory consolidation; weekly evolution of at most five core beliefs. | `morning_routine.py`, `worker_cron.py`, `evolution_engine.py` |
 | **Self-publishing columnist** | Telegram channels → an LLM editor picks one story *by index* (so the link and quote are real, not hallucinated) → a post in one of 9 formats (from a two-line jab to a producer's thought experiment) with a tone palette, stop-list of clichés and a rewrite pass, header with source link and monospace quote. Forecasts can't land in the past. | `news_module/` |
 | **Replies to himself** | A third of posts get a scheduled follow-up: 20 minutes to a day later he replies to his own post with a punchline, an afterthought or a bit of self-irony, like a real channel author. | `followup_cron.py` |
+| **Speaks your language** | Replies in the language the user writes in; buttons, invoices and system messages follow the user's Telegram language (Russian or English). | `prompts.py`, `i18n.py`, `locales/` |
 | **Human punctuation** | Deterministic post-processing, no tokens spent: em dashes, the tell-tale sign of machine text, become `-`, `=` or `:`, the way people actually type in messengers. | `humanize.py` |
 | **Shadow assistant** | After each reply, a second agent suggests the user's next best question, grounded in a producer methodology. | `assistant.py` |
 | **Production details** | Debounce that merges message bursts, "novel mode" for huge inputs, file parsing (PDF/DOCX/XLSX/PPTX), images, retries, JSON recovery for truncated LLM output, Telegram Stars payments, per-event analytics. | `main.py` |
@@ -79,7 +80,7 @@ cp template.env .env             # TELEGRAM_TOKEN, GEMINI_API_KEY, ADMIN_ID, ...
 PYTHONPATH=. python aristarkh_core/main.py
 ```
 
-Autonomous life runs from cron (server in Moscow time):
+Aristarkh lives in Moscow: his daily schedule uses Europe/Moscow, so run cron in that timezone or change it.
 
 ```cron
 0 2 * * *   cd aristarkh_core && PYTHONPATH=.. python worker_cron.py          # sleep, reflection, Sunday evolution
@@ -102,7 +103,7 @@ news_module/      tg_news.py (newsroom) · post_builder.py (columnist) · publis
 knowledge_base/   demo/ (original MIT corpus) · README.md (bring your own knowledge)
 qa/               qa_runner.py (end-to-end suite with LLM-as-a-Judge)
 tools/            research_rag.py (RAG over research papers)
-locales/          ru / en UI strings
+locales/          UI strings (en, ru), picked per user
 docs/             architecture.svg · knowledge-pipeline.svg · RESEARCH.md (annotated reading list)
 ```
 
