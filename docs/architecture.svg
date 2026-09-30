@@ -1,0 +1,174 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 900" width="1280" height="900" font-family="Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0f17"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1c2433" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#8b98ad"/>
+    </marker>
+    <marker id="arrowO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#e3a73b"/>
+    </marker>
+    <style>
+      .title { fill:#f0f4fa; font-size:30px; font-weight:800; letter-spacing:-0.5px }
+      .sub { fill:#9aa7bd; font-size:15px }
+      .h { font-size:15px; font-weight:800; letter-spacing:1.4px }
+      .t { fill:#e6ebf2; font-size:15px; font-weight:600 }
+      .s { fill:#9aa7bd; font-size:12.5px }
+      .m { fill:#c9d4e3; font-size:12px; font-family:SFMono-Regular, Menlo, Consolas, monospace }
+      .num { fill:#0b0f17; font-size:13px; font-weight:800 }
+      .card { fill:#141b27; stroke-width:1.5 }
+      .flow { stroke:#8b98ad; stroke-width:1.8; fill:none }
+      .life { stroke:#e3a73b; stroke-width:1.8; fill:none; stroke-dasharray:6 5 }
+    </style>
+  </defs>
+
+  <rect width="1280" height="900" fill="url(#bg)"/>
+  <rect width="1280" height="900" fill="url(#grid)" opacity="0.55"/>
+
+  <!-- Header -->
+  <text x="40" y="58" class="title">Aristarkh Gradov · AI persona architecture</text>
+  <text x="40" y="84" class="sub">Telegram-native character agent: two-pass cognition · affective state · 3-layer memory · autonomous daily life · self-publishing columnist</text>
+
+  <!-- ============ COLUMN 1: INTERFACE ============ -->
+  <text x="40" y="128" class="h" fill="#58a6ff">INTERFACE</text>
+  <rect x="40" y="140" width="230" height="118" rx="14" class="card" stroke="#58a6ff"/>
+  <text x="58" y="168" class="t">👤 User in Telegram</text>
+  <text x="58" y="192" class="s">text · photos · PDF / DOCX /</text>
+  <text x="58" y="210" class="s">XLSX / PPTX · long reads</text>
+  <text x="58" y="236" class="m">aiogram 3 · Redis FSM</text>
+
+  <rect x="40" y="276" width="230" height="140" rx="14" class="card" stroke="#58a6ff"/>
+  <text x="58" y="304" class="t">Input shaping</text>
+  <text x="58" y="328" class="s">debounce 2.5 s: bursts of</text>
+  <text x="58" y="346" class="s">messages → one thought</text>
+  <text x="58" y="370" class="s">"novel mode" for huge inputs</text>
+  <text x="58" y="394" class="s">anti-spam while thinking</text>
+
+  <rect x="40" y="434" width="230" height="112" rx="14" class="card" stroke="#58a6ff"/>
+  <text x="58" y="462" class="t">Monetization</text>
+  <text x="58" y="486" class="s">Telegram Stars credits,</text>
+  <text x="58" y="504" class="s">subscriptions, promo codes,</text>
+  <text x="58" y="522" class="s">event analytics in SQLite</text>
+
+  <rect x="40" y="564" width="230" height="100" rx="14" class="card" stroke="#58a6ff"/>
+  <text x="58" y="592" class="t">📣 Channel column</text>
+  <text x="58" y="616" class="s">3 posts a day, link + quote</text>
+  <text x="58" y="634" class="s">of the source, varied formats</text>
+
+  <!-- arrows from interface to pipeline -->
+  <path d="M270 199 H318" class="flow" marker-end="url(#arrow)"/>
+  <path d="M270 346 H300 V230 H318" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- ============ COLUMN 2: COGNITIVE PIPELINE ============ -->
+  <text x="320" y="128" class="h" fill="#bc8cff">COGNITIVE LOOP · every message</text>
+  <rect x="320" y="140" width="470" height="524" rx="16" fill="#120f1f" stroke="#bc8cff" stroke-width="1.5"/>
+
+  <!-- step 1 -->
+  <circle cx="352" cy="176" r="13" fill="#bc8cff"/><text x="347.5" y="180.5" class="num">1</text>
+  <text x="376" y="172" class="t">Affective update</text>
+  <text x="376" y="192" class="s">trust 0–100 · fatigue 0–100 · mood — per user, persisted</text>
+  <!-- step 2 -->
+  <circle cx="352" cy="232" r="13" fill="#bc8cff"/><text x="347.5" y="236.5" class="num">2</text>
+  <text x="376" y="228" class="t">Micro-router → grounding</text>
+  <text x="376" y="248" class="s">cheap model decides if the web is needed; search only then</text>
+  <!-- step 3 -->
+  <circle cx="352" cy="288" r="13" fill="#bc8cff"/><text x="347.5" y="292.5" class="num">3</text>
+  <text x="376" y="284" class="t">Parallel memory recall</text>
+  <text x="376" y="304" class="s">knowledge RAG · episodic · semantic facts (asyncio.gather)</text>
+  <!-- step 4 -->
+  <circle cx="352" cy="344" r="13" fill="#bc8cff"/><text x="347.5" y="348.5" class="num">4</text>
+  <text x="376" y="340" class="t">Situational self</text>
+  <text x="376" y="360" class="s">internal clock (time since last msg) · where he is now</text>
+  <text x="376" y="377" class="s">(Moscow-time life schedule) · daily agenda · core beliefs</text>
+  <!-- step 5 -->
+  <circle cx="352" cy="414" r="13" fill="#bc8cff"/><text x="347.5" y="418.5" class="num">5</text>
+  <text x="376" y="410" class="t">Inner monologue · private</text>
+  <rect x="376" y="421" width="390" height="26" rx="6" fill="#1d1733"/>
+  <text x="388" y="439" class="m">&lt;THOUGHTS&gt; raw feelings &lt;/THOUGHTS&gt;  &lt;STRATEGY&gt; plan</text>
+  <!-- step 6 -->
+  <circle cx="352" cy="484" r="13" fill="#bc8cff"/><text x="347.5" y="488.5" class="num">6</text>
+  <text x="376" y="480" class="t">Persona response</text>
+  <text x="376" y="500" class="s">acts on the plan, never quotes it · identity &amp; provenance</text>
+  <text x="376" y="517" class="s">guards · lie &amp; topic-jump detection</text>
+  <!-- step 7 -->
+  <circle cx="352" cy="554" r="13" fill="#bc8cff"/><text x="347.5" y="558.5" class="num">7</text>
+  <text x="376" y="550" class="t">Silent treatment gate</text>
+  <text x="376" y="570" class="s">if the plan says "ignore", the user gets… nothing</text>
+  <!-- step 8 -->
+  <circle cx="352" cy="610" r="13" fill="#8b98ad"/><text x="347.5" y="614.5" class="num">8</text>
+  <text x="376" y="606" class="t">After the reply (background)</text>
+  <text x="376" y="626" class="s">memory extraction every 5 turns → facts, summary, Δtrust,</text>
+  <text x="376" y="643" class="s">mood · shadow assistant suggests the next best question</text>
+
+  <!-- pipeline to memory arrows -->
+  <path d="M790 296 H836" class="flow" marker-end="url(#arrow)"/>
+  <path d="M836 620 H790" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- ============ COLUMN 3: MEMORY & STATE ============ -->
+  <text x="838" y="128" class="h" fill="#3fb950">MEMORY &amp; STATE</text>
+  <rect x="838" y="140" width="402" height="102" rx="14" class="card" stroke="#3fb950"/>
+  <text x="856" y="167" class="t">📚 Professional knowledge</text>
+  <text x="856" y="189" class="s">ChromaDB · 2.8k chunks of producer lectures &amp; essays</text>
+  <text x="856" y="207" class="s">recursive splitter, source headers, provenance rule:</text>
+  <text x="856" y="225" class="s">someone else's first-person story is never "mine"</text>
+
+  <rect x="838" y="256" width="402" height="120" rx="14" class="card" stroke="#3fb950"/>
+  <text x="856" y="283" class="t">🧠 Episodic memory · per user</text>
+  <text x="856" y="305" class="s">conversation summaries ranked by cognitive score:</text>
+  <rect x="856" y="316" width="366" height="44" rx="6" fill="#0f1f16"/>
+  <text x="868" y="334" class="m">score = 1.5·relevance + 1.0·importance</text>
+  <text x="868" y="352" class="m">      + 0.5·recency (0.99^hours, floor 0.1)</text>
+
+  <rect x="838" y="390" width="402" height="84" rx="14" class="card" stroke="#3fb950"/>
+  <text x="856" y="417" class="t">🕸 Semantic facts</text>
+  <text x="856" y="439" class="s">subject → predicate → object triples about each user,</text>
+  <text x="856" y="457" class="s">used as hard facts to catch lies and contradictions</text>
+
+  <rect x="838" y="488" width="402" height="84" rx="14" class="card" stroke="#3fb950"/>
+  <text x="856" y="515" class="t">🧬 Core beliefs · max 5</text>
+  <text x="856" y="537" class="s">first-person worldview that evolves from experience</text>
+  <text x="856" y="555" class="s">and overrides older lectures when they conflict</text>
+
+  <rect x="838" y="586" width="402" height="78" rx="14" class="card" stroke="#3fb950"/>
+  <text x="856" y="613" class="t">🗄 SQLite</text>
+  <text x="856" y="635" class="s">users · affective state · credits · Stars ledger ·</text>
+  <text x="856" y="653" class="s">full event analytics (every thought is logged)</text>
+
+  <!-- ============ AUTONOMOUS LIFE (bottom band) ============ -->
+  <text x="40" y="712" class="h" fill="#e3a73b">AUTONOMOUS LIFE · cron, while nobody is writing</text>
+  <rect x="40" y="724" width="1200" height="92" rx="16" fill="#1a1508" stroke="#e3a73b" stroke-width="1.5"/>
+
+  <text x="62" y="754" class="t">🌅 Morning agenda</text>
+  <text x="62" y="776" class="s">reads the news, forms a</text>
+  <text x="62" y="794" class="s">"thesis of the day" (strength 0–10)</text>
+  <path d="M292 770 H322" class="life" marker-end="url(#arrowO)"/>
+
+  <text x="332" y="754" class="t">📰 Newsroom ×3 a day</text>
+  <text x="332" y="776" class="s">Telegram channels → LLM editor picks</text>
+  <text x="332" y="794" class="s">one story (by index: real link &amp; quote)</text>
+  <path d="M632 770 H662" class="life" marker-end="url(#arrowO)"/>
+
+  <path d="M720 724 V690 H155 V668" class="life" marker-end="url(#arrowO)"/>
+  <text x="672" y="754" class="t">✍️ Columnist</text>
+  <text x="672" y="776" class="s">9 post formats · tone palette ·</text>
+  <text x="672" y="794" class="s">anti-cliché · replies to itself later</text>
+  <path d="M912 770 H942" class="life" marker-end="url(#arrowO)"/>
+
+  <text x="952" y="754" class="t">🌙 Night: sleep &amp; reflection</text>
+  <text x="952" y="776" class="s">daily memory consolidation, fatigue</text>
+  <text x="952" y="794" class="s">reset · Sunday: beliefs evolution</text>
+
+  <!-- ============ FOOTER: MODELS + QA ============ -->
+  <rect x="40" y="836" width="780" height="46" rx="12" class="card" stroke="#f778ba"/>
+  <text x="58" y="865" class="t" fill="#f778ba">MODELS</text>
+  <text x="140" y="865" class="s">Gemini 3.1 Pro — monologue &amp; voice · 2.5 Flash — router, extraction, reflection · Flash-Lite — newsroom · embeddings</text>
+
+  <rect x="838" y="836" width="402" height="46" rx="12" class="card" stroke="#39c5cf"/>
+  <text x="856" y="865" class="t" fill="#39c5cf">QA</text>
+  <text x="890" y="865" class="s">end-to-end Telethon suite + LLM-as-a-Judge</text>
+</svg>

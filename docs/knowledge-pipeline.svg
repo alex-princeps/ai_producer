@@ -1,0 +1,111 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 640" width="1280" height="640" font-family="Inter, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b0f17"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#1c2433" stroke-width="1"/>
+    </pattern>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#8b98ad"/>
+    </marker>
+    <style>
+      .title { fill:#f0f4fa; font-size:28px; font-weight:800; letter-spacing:-0.5px }
+      .sub { fill:#9aa7bd; font-size:15px }
+      .h { font-size:15px; font-weight:800; letter-spacing:1.4px }
+      .t { fill:#e6ebf2; font-size:16px; font-weight:700 }
+      .s { fill:#9aa7bd; font-size:12.5px }
+      .joke { fill:#e3a73b; font-size:12.5px; font-style:italic }
+      .m { fill:#c9d4e3; font-size:12px; font-family:SFMono-Regular, Menlo, Consolas, monospace }
+      .card { fill:#141b27; stroke-width:1.5 }
+      .flow { stroke:#8b98ad; stroke-width:1.8; fill:none }
+    </style>
+  </defs>
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)" opacity="0.55"/>
+
+  <text x="40" y="56" class="title">Bring your own knowledge base</text>
+  <text x="40" y="82" class="sub">Drop files in a folder. Aristarkh turns them into professional instinct, and remembers whose stories are whose.</text>
+
+  <!-- INGEST -->
+  <text x="40" y="126" class="h" fill="#3fb950">INGEST · once, on first start</text>
+
+  <rect x="40" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
+  <text x="58" y="170" class="t">📂 Your sources</text>
+  <text x="58" y="194" class="m">.pdf .docx .txt .md</text>
+  <text x="58" y="216" class="s">lectures, playbooks, essays,</text>
+  <text x="58" y="234" class="s">war stories, your own notes</text>
+  <text x="58" y="272" class="joke">garbage in = garbage in 4K</text>
+
+  <path d="M260 215 H288" class="flow" marker-end="url(#a)"/>
+  <rect x="290" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
+  <text x="308" y="170" class="t">✂️ Smart splitter</text>
+  <text x="308" y="194" class="s">paragraph → sentence → word</text>
+  <text x="308" y="214" class="m">1200 chars · 200 overlap</text>
+  <text x="308" y="236" class="s">thoughts stay whole</text>
+  <text x="308" y="272" class="joke">cuts like an editor, not a butcher</text>
+
+  <path d="M510 215 H538" class="flow" marker-end="url(#a)"/>
+  <rect x="540" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
+  <text x="558" y="170" class="t">🏷 Source stamp</text>
+  <text x="558" y="194" class="m">[SOURCE: file name]</text>
+  <text x="558" y="216" class="s">glued to every chunk, so the</text>
+  <text x="558" y="234" class="s">model knows who said it</text>
+  <text x="558" y="272" class="joke">provenance, not vibes</text>
+
+  <path d="M760 215 H788" class="flow" marker-end="url(#a)"/>
+  <rect x="790" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
+  <text x="808" y="170" class="t">🧬 Embeddings</text>
+  <text x="808" y="194" class="m">gemini-embedding-001</text>
+  <text x="808" y="216" class="s">batched, rate-limit friendly</text>
+  <text x="808" y="272" class="joke">prose → a few thousand floats</text>
+
+  <path d="M1010 215 H1038" class="flow" marker-end="url(#a)"/>
+  <rect x="1040" y="140" width="200" height="150" rx="14" class="card" stroke="#3fb950"/>
+  <text x="1058" y="170" class="t">🗄 ChromaDB</text>
+  <text x="1058" y="194" class="m">aristarkh_knowledge</text>
+  <text x="1058" y="216" class="s">persistent, indexed once,</text>
+  <text x="1058" y="234" class="s">self-healing on corruption</text>
+  <text x="1058" y="272" class="joke">it's a vector DB, not a diary</text>
+
+  <!-- down arrow to retrieval -->
+  <path d="M1140 290 V352" class="flow" marker-end="url(#a)"/>
+
+  <!-- RETRIEVE -->
+  <text x="40" y="340" class="h" fill="#bc8cff">RECALL · every message and every post</text>
+
+  <rect x="40" y="354" width="300" height="150" rx="14" class="card" stroke="#bc8cff"/>
+  <text x="58" y="384" class="t">📨 A message or a news story</text>
+  <text x="58" y="408" class="s">query + domain hint, top-k chunks</text>
+  <text x="58" y="428" class="m">k = 5 in chat · k = 3 in posts</text>
+  <text x="58" y="486" class="joke">relevant, not just similar</text>
+
+  <path d="M190 504 V518 H1140 V508" class="flow" marker-end="url(#a)"/>
+  <path d="M1040 430 H1000" class="flow" marker-end="url(#a)"/>
+  <rect x="690" y="354" width="310" height="150" rx="14" class="card" stroke="#bc8cff"/>
+  <text x="708" y="384" class="t">🛡 Provenance rules</text>
+  <text x="708" y="408" class="s">methodology → "my expertise, my words"</text>
+  <text x="708" y="428" class="s">someone's first-person story →</text>
+  <text x="708" y="446" class="s">"a colleague once told me…"</text>
+  <text x="708" y="486" class="joke">never "according to my knowledge base"</text>
+
+  <path d="M690 430 H650" class="flow" marker-end="url(#a)"/>
+  <rect x="370" y="354" width="280" height="150" rx="14" class="card" stroke="#bc8cff"/>
+  <text x="388" y="384" class="t">🎭 Persona voice</text>
+  <text x="388" y="408" class="s">knowledge becomes instinct:</text>
+  <text x="388" y="428" class="s">a 55-year-old showrunner who</text>
+  <text x="388" y="446" class="s">"just knows how this works"</text>
+  <text x="388" y="486" class="joke">sounds like a pro, cites like a pro</text>
+
+  <rect x="1040" y="354" width="200" height="150" rx="14" class="card" stroke="#bc8cff"/>
+  <text x="1058" y="384" class="t">🔎 Similarity</text>
+  <text x="1058" y="408" class="s">nearest neighbours (L2)</text>
+  <text x="1058" y="428" class="s">+ source headers</text>
+  <text x="1058" y="486" class="joke">no LangChain was harmed</text>
+
+  <!-- footer -->
+  <rect x="40" y="532" width="1200" height="72" rx="14" class="card" stroke="#e3a73b"/>
+  <text x="58" y="562" class="t" fill="#e3a73b">Demo corpus included</text>
+  <text x="58" y="586" class="s">knowledge_base/demo/ · four original methodology notes + one fictional colleague's war story that the persona must never claim as its own. Replace with your stuff, restart, done.</text>
+</svg>

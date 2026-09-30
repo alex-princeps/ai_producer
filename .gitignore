@@ -1,0 +1,50 @@
+# Python
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+*.py[cod]
+.Python
+
+# macOS
+.DS_Store
+
+# Секреты — никогда не коммитить
+.env
+.env.*
+!template.env
+*.session
+*.session-journal
+promo_users.json
+
+# Базы данных и векторные индексы
+*.db
+*.sqlite3
+aristarkh_core/chroma_db/
+tools/research_chroma_db/
+
+# Knowledge base: only the demo corpus is public; your own sources stay out of git
+knowledge_base/*
+!knowledge_base/demo/
+!knowledge_base/README.md
+kartoz_lectures/
+research_papers/
+
+# Russian docs are kept locally only
+*.ru.md
+
+# Состояние бота во время работы (создаётся автоматически)
+aristarkh_core/semantic_memory.json
+aristarkh_core/aristarkh_agenda.json
+aristarkh_core/aristarkh_core_beliefs.json
+tg_news.json
+news_module/tg_news.json
+
+# Логи и бэкапы
+*.log
+*.err
+backups/
+*.bundle
