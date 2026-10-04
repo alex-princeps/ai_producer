@@ -13,7 +13,7 @@ import html
 import time  # [NEW] Внутренняя шкала времени Аристарха
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -39,8 +39,9 @@ from aristarkh_core.assistant import AssistantService
 from semantic_memory import SemanticMemory
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
 from aristarkh_core.context_simulator import ContextSimulator  # [NEW] Симулятор среды обитания
-from news_module.post_builder import extract_url, generate_post
+from news_module.post_builder import extract_url, generate_post, generate_razbor
 from aristarkh_core.humanize import humanize_punctuation
+import uuid
 
 # --- INIT ---
 try:
@@ -236,6 +237,97 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.set_state(BotStates.chatting)
     await state.update_data(interaction_count=0)
     await message.answer(welcome_text, reply_markup=main_kb(lang), parse_mode="Markdown")
+
+# --- РУБРИКА «РАЗБОР ПОДПИСЧИКА»: только администратор ---
+# /razbor <вопрос> → Аристарх пишет разбор → превью с кнопками → публикация в канал.
+# Черновики живут в памяти процесса: после перезапуска бота превью нужно запросить заново.
+razbor_drafts: dict[str, dict] = {}
+
+
+def razbor_kb(draft_id: str, lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=i18n.get_text("btn_razbor_publish", lang), callback_data=f"rz_pub:{draft_id}"),
+        InlineKeyboardButton(text=i18n.get_text("btn_razbor_redo", lang), callback_data=f"rz_redo:{draft_id}"),
+        InlineKeyboardButton(text=i18n.get_text("btn_razbor_cancel", lang), callback_data=f"rz_del:{draft_id}"),
+    ]])
+
+
+async def make_razbor(question: str) -> str:
+    me = await bot.get_me()
+    core_beliefs = evolution_engine.get_current_beliefs()
+    post_html, _ = await generate_razbor(llm_service, rag_service, core_beliefs, question, f"@{me.username}")
+    return post_html
+
+
+@dp.message(Command("razbor"), F.from_user.id == config.ADMIN_ID)
+async def cmd_razbor(message: types.Message, command: CommandObject):
+    lang = i18n.user_lang(message.from_user)
+    question = (command.args or "").strip()
+    if not question:
+        await message.answer(i18n.get_text("razbor_usage", lang))
+        return
+    if not CHANNEL_ID:
+        await message.answer(i18n.get_text("razbor_no_channel", lang))
+        return
+    wait_msg = await message.answer(i18n.get_text("razbor_wait", lang))
+    try:
+        post_html = await make_razbor(question)
+    except Exception as e:
+        logger.error(f"Razbor error: {e}")
+        await wait_msg.edit_text(i18n.get_text("post_error", lang, error=e))
+        return
+    draft_id = uuid.uuid4().hex[:8]
+    razbor_drafts[draft_id] = {"question": question, "html": post_html}
+    await wait_msg.delete()
+    await message.answer(
+        post_html, parse_mode="HTML",
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
+        reply_markup=razbor_kb(draft_id, lang),
+    )
+
+
+@dp.callback_query(F.data.startswith("rz_"), F.from_user.id == config.ADMIN_ID)
+async def razbor_action(callback: types.CallbackQuery):
+    lang = i18n.user_lang(callback.from_user)
+    action, _, draft_id = callback.data.partition(":")
+    if draft_id not in razbor_drafts:
+        await callback.answer(i18n.get_text("razbor_expired", lang), show_alert=True)
+        return
+
+    if action == "rz_pub":
+        draft = razbor_drafts.pop(draft_id)  # сразу забираем: двойное нажатие не опубликует дважды
+        try:
+            await bot.send_message(
+                CHANNEL_ID, draft["html"], parse_mode="HTML",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+            )
+        except Exception as e:
+            razbor_drafts[draft_id] = draft
+            await callback.answer(i18n.get_text("post_error", lang, error=e), show_alert=True)
+            return
+        await db_service.log_event(callback.from_user.id, "RAZBOR_PUBLISHED", f"channel:{CHANNEL_ID}")
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.reply(i18n.get_text("razbor_published", lang, channel=CHANNEL_ID))
+        await callback.answer()
+    elif action == "rz_redo":
+        await callback.answer(i18n.get_text("razbor_wait", lang))
+        try:
+            post_html = await make_razbor(razbor_drafts[draft_id]["question"])
+        except Exception as e:
+            logger.error(f"Razbor redo error: {e}")
+            await callback.message.reply(i18n.get_text("post_error", lang, error=e))
+            return
+        razbor_drafts[draft_id]["html"] = post_html
+        await callback.message.edit_text(
+            post_html, parse_mode="HTML",
+            link_preview_options=LinkPreviewOptions(is_disabled=True),
+            reply_markup=razbor_kb(draft_id, lang),
+        )
+    else:
+        razbor_drafts.pop(draft_id, None)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.reply(i18n.get_text("razbor_cancelled", lang))
+        await callback.answer()
 
 # --- HANDLER: ПЕРЕКУР (AFFECTIVE MEMORY RESET — ИСТОРИЯ НЕ СТИРАЕТСЯ) ---
 @dp.message(F.text.in_(i18n.variants("btn_rest")))

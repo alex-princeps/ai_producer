@@ -26,8 +26,9 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None):
     2. Проверяет, не была ли она уже опубликована (защита от дублей)
     3. Получает актуальные Core Beliefs (фон для суждений)
     4. Генерирует пост через news_module/post_builder.py: случайный формат и тон,
-       RAG-контекст, стоп-лист клише, память о начале прошлых постов
-    5. Добавляет шапку: ссылка на новость + моноширинная цитата оригинала
+       RAG-контекст, стоп-лист клише, память о начале прошлых постов, абзац «Что забрать себе»,
+       раз в 4–5 постов ссылка на бота
+    5. Добавляет шапку: ссылка на новость + свёрнутая цитата оригинала
     6. Пушит в канал через Telegram Bot API (HTML, без превью ссылки)
     7. Помечает новость как опубликованную и сохраняет историю форматов
 
@@ -102,8 +103,11 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None):
 
             # === ШАГ 5: Генерация поста (формат, тон, анти-клише, RAG, шапка со ссылкой) ===
             history = news_data.get("post_history", [])
+            me = await bot.get_me()  # ссылка на бота в конце поста (раз в 4–5 постов)
             logger.info("🧠 [Publisher] Аристарх пишет пост...")
-            channel_post, post_meta = await generate_post(llm, rag_service, core_beliefs, digest, history, force_format)
+            channel_post, post_meta = await generate_post(
+                llm, rag_service, core_beliefs, digest, history, force_format, cta_handle=f"@{me.username}"
+            )
             logger.info(f"   Пост сгенерирован: {len(channel_post)} символов (формат {post_meta['format']})")
 
             if dry_run:

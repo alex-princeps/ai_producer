@@ -9,10 +9,13 @@
 - начала последних постов передаются в промпт, чтобы не повторяться;
 - байки из базы знаний — только в форматах, где они уместны, и без присвоения
   чужого опыта себе;
-- в начале поста — ссылка на новость и моноширинная цитата оригинала;
+- в начале поста — ссылка на новость и свёрнутая цитата оригинала без служебных хвостов источника;
+- последний абзац каждого поста — «Что забрать себе»: как применить урок в своём канале или бизнесе;
+- раз в 4–5 постов в конце — ссылка на бота для личного разбора;
 - длинные тире заменяются на человеческие «-», «=», «:» (детерминированно, без LLM);
 - в «Ставке» прогноз не может уйти в прошлое: годы раньше текущего → переписывание;
-- «добивка»: через время Аристарх отвечает на собственный пост короткой фразой.
+- «добивка»: через время Аристарх отвечает на собственный пост короткой фразой;
+- «Разбор подписчика»: публичный ответ на вопрос читателя (generate_razbor).
 """
 
 import html
@@ -27,8 +30,14 @@ from aristarkh_core.humanize import humanize_punctuation
 from aristarkh_core.prompts import Prompts
 
 TELEGRAM_LIMIT = 4096
-QUOTE_MAX_CHARS = 700
+QUOTE_MAX_CHARS = 500
 HISTORY_SIZE = 10
+
+# Для кого канал: от этого зависят примеры в абзаце «Что забрать себе»
+AUDIENCE = (
+    "авторы Telegram-каналов и начинающие блогеры, копирайтеры и маркетологи, "
+    "владельцы небольших продакшенов и малого бизнеса (салоны красоты, юридические фирмы, небольшие стройки)"
+)
 
 # Форматы поста: инструкция, диапазон длины (символы), можно ли опираться на байку из базы, вес
 POST_FORMATS = [
@@ -155,7 +164,58 @@ def find_contact_claims(text: str) -> list[str]:
     return [m.group(0) for m in CONTACT_CLAIMS.finditer(text)]
 
 
-HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые заканчиваются вопросом к подписчикам
+HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые задают вопрос подписчикам
+
+TAKEAWAY_LABEL = "Что забрать себе:"
+TAKEAWAY_RE = re.compile(r"(?m)^\s*Что забрать себе:")
+TAKEAWAY_RULE = (
+    "Последний абзац начинается словами «Что забрать себе:». Одна-две фразы, до 250 символов: "
+    "что конкретно читатель может сделать у себя (в Telegram-канале, блоге, салоне, юрфирме, "
+    "небольшой строительной компании или маленьком продакшене) с этим приёмом или уроком. "
+    "Действие, а не мораль, и не повтор сказанного выше."
+)
+TAKEAWAY_FIX = "нет последнего абзаца «Что забрать себе:» (1–2 фразы о том, как применить это в своём канале, блоге или бизнесе)"
+
+# Ссылка на бота для личного разбора: каждый 4-й или 5-й пост
+CTA_EVERY = 4
+CTA_TEXTS = [
+    "Разобрать ваш проект: {bot}",
+    "Хотите такой же разбор своего канала или бизнеса? Пишите: {bot}",
+    "Ваш проект на мой стол: {bot}",
+]
+RAZBOR_TITLE = "Разбор подписчика"
+RAZBOR_CTA = "Ваш вопрос или проект на разбор: {bot}"
+
+
+def needs_cta(history: list[dict], rng=random) -> bool:
+    """Пора ли ставить ссылку на бота. Посты старого формата (без поля cta) начинают отсчёт заново."""
+    since = 0  # постов без ссылки после последней
+    for h in reversed(history):
+        if "cta" not in h or h["cta"]:
+            break
+        since += 1
+    if since < CTA_EVERY - 1:
+        return False
+    return since >= CTA_EVERY or rng.random() < 0.5
+
+
+def cta_line(bot_handle: str, rng=random) -> str:
+    return rng.choice(CTA_TEXTS).format(bot=bot_handle)
+
+
+# Служебные хвосты каналов-источников, которым не место в цитате (проверяются только короткие строки)
+QUOTE_JUNK = re.compile(
+    r"запрещ[её]нн\w*\s+(?:в\s+(?:России|РФ)\s+)?(?:экстремистск\w*\s+)?(?:социальн\w*\s+сет\w*|соцсет\w*|организац\w*)"
+    r"|\b(?:TG|Telegram|ТГ)\s*\|\s*(?:VK|ВК)\b"
+    r"|^\s*(?:подписаться|подпишись|подписывайтесь|наш канал|читать полностью|читать далее)\b"
+    r"|^\s*(?:@\w+|https?://\S+|(?:#\w+\s*)+)\s*$",
+    re.IGNORECASE,
+)
+
+
+def clean_quote(text: str) -> str:
+    kept = [ln for ln in (text or "").splitlines() if not (len(ln.strip()) <= 120 and QUOTE_JUNK.search(ln))]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip()
 
 
 def build_system_prompt(
@@ -185,17 +245,19 @@ def build_system_prompt(
 
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
     hook_rule = (
-        "11. Закончи пост одним острым вопросом к подписчикам — таким, на который хочется ответить в комментариях.\n"
+        "12. Перед абзацем «Что забрать себе:» задай один острый вопрос подписчикам — такой, "
+        "на который хочется ответить в комментариях.\n"
         if hook else ""
     )
     return f"""
 {Prompts.LORE}
 
-Ты пишешь пост в свой авторский Telegram-канал DeusExMedia — комментарий к новости.
+Ты пишешь пост в свой авторский Telegram-канал — комментарий к новости.
+ТВОИ ЧИТАТЕЛИ: {AUDIENCE}. Им интересно, как устроены медиа, и что из этого можно применить у себя.
 Сегодня {today_ru()}. Все сроки и прогнозы считай от этой даты.
 
 ФОРМАТ ЭТОГО ПОСТА: «{fmt['name']}». {fmt['instruction']}
-ДЛИНА: {lo}–{hi} символов. Это жёсткое требование: не длиннее.
+ДЛИНА: {lo}–{hi} символов без абзаца «Что забрать себе». Это жёсткое требование: не длиннее.
 ТОН ЭТОГО ПОСТА: {tone}. Если этот тон совсем не ложится на новость, выбери ближайший уместный.
 
 ТВОИ ВЗГЛЯДЫ (фон для суждений — НЕ цитируй эти формулировки и не пересказывай их):
@@ -215,6 +277,7 @@ def build_system_prompt(
 8. Никаких обращений к конкретному собеседнику, никакой личной переписки, никакого «где я сейчас нахожусь».
 9. Без заголовков, без списков, без markdown и звёздочек. Обычный текст, абзацы по смыслу.
 10. Не пиши «Цитата», не повторяй текст новости — он будет показан над постом отдельно.
+11. {TAKEAWAY_RULE}
 {hook_rule}"""
 
 
@@ -246,27 +309,43 @@ def extract_url(text: str) -> str | None:
     return m.group(0).rstrip(").,") if m else None
 
 
-def render_post_html(comment: str, news: dict) -> str:
-    """Шапка со ссылкой и моноширинной цитатой + сам комментарий (HTML для Telegram)."""
+def _body_html(text: str, cta: str | None) -> str:
+    """Текст поста в HTML: метка «Что забрать себе» жирным, ссылка на бота курсивом в конце."""
+    body = html.escape(text.strip()).replace(TAKEAWAY_LABEL, f"<b>{TAKEAWAY_LABEL}</b>", 1)
+    return body + (f"\n\n<i>{html.escape(cta)}</i>" if cta else "")
+
+
+def render_post_html(comment: str, news: dict, cta: str | None = None) -> str:
+    """Шапка со ссылкой и свёрнутой цитатой + сам комментарий (HTML для Telegram)."""
     url = news.get("url") or extract_url(news.get("content", ""))
     channel = news.get("channel")
     # Старый формат новости (до выбора по номеру): «суть + URL: ссылка» — чистим хвост
     quote_src = news.get("original_text") or re.sub(r"\bURL:\s*$", "", URL_RE.sub("", news.get("content", "")).strip()).strip()
+    quote_src = clean_quote(quote_src)
 
     header = []
     if url:
         label = f"Новость · @{channel}" if channel else "Новость"
         header.append(f'🔗 <a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
-    body = html.escape(comment.strip())
+    body = _body_html(comment, cta)
 
     quote_limit = QUOTE_MAX_CHARS
     while True:
         quote = html.escape(_trim(quote_src, quote_limit)) if quote_src else ""
-        block = header + ([f"Цитата:\n<pre>{quote}</pre>"] if quote else [])
+        # Свёрнутая цитата: в ленте видно начало, остальное раскрывается по тапу
+        block = header + ([f"<blockquote expandable>{quote}</blockquote>"] if quote else [])
         result = "\n".join(block) + ("\n\n" if block else "") + body
         if len(result) <= TELEGRAM_LIMIT or quote_limit <= 100:
             return result[:TELEGRAM_LIMIT]
         quote_limit -= 150
+
+
+def render_razbor_html(question: str, answer: str, cta: str | None = None) -> str:
+    """Рубрика «Разбор подписчика»: заголовок, вопрос цитатой (длинный — свёрнутой), ответ."""
+    q = html.escape(_trim(question, 1200))
+    quote_tag = "blockquote expandable" if len(q) > 400 else "blockquote"
+    head = f"<b>{RAZBOR_TITLE}</b>\n<{quote_tag}>{q}</blockquote>\n\n"
+    return (head + _body_html(answer, cta))[:TELEGRAM_LIMIT]
 
 
 _YEAR = re.compile(r"\b(20\d{2})\b")
@@ -287,12 +366,65 @@ def _opening(text: str) -> str:
     return first[:120]
 
 
+async def generate_takeaway(llm, post_text: str) -> str:
+    """Запасной путь: модель забыла абзац «Что забрать себе» — дописываем его отдельным коротким вызовом."""
+    system_prompt = f"""
+{Prompts.LORE}
+
+Ты закончил пост для своего Telegram-канала. Твои читатели: {AUDIENCE}.
+Допиши к посту последний абзац. {TAKEAWAY_RULE}
+Верни только этот абзац. Без markdown и звёздочек.
+"""
+    text = (await llm.generate_standalone(system_prompt, f"ТВОЙ ПОСТ:\n{post_text}")).replace("*", "").strip()
+    _ensure_generated(text)
+    return text if TAKEAWAY_RE.search(text) else f"{TAKEAWAY_LABEL} {text}"
+
+
+async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_problems: list[str] | None = None) -> str:
+    """
+    Проверки после генерации: клише, выдуманные знакомства с реальными людьми, абзац «Что забрать себе».
+    Если что-то не так — один проход переписывания. Выдуманное знакомство, пережившее переписывание,
+    останавливает публикацию; забытый вывод дописывается отдельно.
+    """
+    problems = find_cliches(text) + list(extra_problems or [])
+    if find_contact_claims(text):
+        problems.append(CONTACT_FIX)
+    if not TAKEAWAY_RE.search(text):
+        problems.append(TAKEAWAY_FIX)
+    if problems:
+        logger.info(f"♻️ [Post] Переписываем: {problems}")
+        rewrite_prompt = (
+            user_prompt
+            + "\n\nТВОЙ ЧЕРНОВИК:\n" + text
+            + "\n\nПерепиши черновик, сохранив мысль, формат и длину, но исправь: "
+            + "; ".join(problems) + "."
+        )
+        rewritten = (await llm.generate_standalone(system_prompt, rewrite_prompt)).replace("*", "").strip()
+        if rewritten and not rewritten.startswith(("⛔️", "⚠️")):
+            text = rewritten
+        left = find_cliches(text)
+        if left:
+            logger.warning(f"⚠️ [Post] После переписывания остались клише: {left}")
+    claims = find_contact_claims(text)
+    if claims:
+        # Выдуманное знакомство с реальным человеком не публикуем: лучше пропустить слот
+        raise ValueError(f"После переписывания осталось выдуманное знакомство: {claims}")
+    if not TAKEAWAY_RE.search(text):
+        try:
+            text = text.rstrip() + "\n\n" + await generate_takeaway(llm, text)
+        except ValueError as e:
+            logger.warning(f"⚠️ [Post] Не удалось дописать «Что забрать себе»: {e}")
+    return humanize_punctuation(text)
+
+
 async def generate_post(
-    llm, rag_service, core_beliefs: list, news: dict, history: list[dict], force_format: str | None = None
+    llm, rag_service, core_beliefs: list, news: dict, history: list[dict], force_format: str | None = None,
+    cta_handle: str | None = None,
 ) -> tuple[str, dict]:
     """
     Генерирует пост. Возвращает (html для отправки, метаданные для истории).
-    history — последние посты: [{"format": id, "opening": "..."}].
+    history — последние посты: [{"format": id, "opening": "...", "cta": bool}].
+    cta_handle — @username бота; раз в 4–5 постов в конце ставится ссылка на него.
     """
     forced = [f for f in POST_FORMATS if f["id"] == force_format]
     fmt = forced[0] if forced else choose_format([h.get("format", "") for h in history])
@@ -308,39 +440,63 @@ async def generate_post(
 
     comment = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(comment)
-    problems = find_cliches(comment)
-    if find_contact_claims(comment):
-        problems.append(CONTACT_FIX)
+    extra = []
     if fmt["id"] == "bet":
         years = past_years(comment, datetime.now(pytz.timezone("Europe/Moscow")).year)
         if years:
-            problems.append(f"сроки в прошлом ({', '.join(map(str, years))}): сегодня {today_ru()}, прогноз должен быть в будущем")
-    cliches = problems
-    if cliches:
-        logger.info(f"♻️ [Post] Клише {cliches} — переписываем")
-        rewrite_prompt = (
-            user_prompt
-            + "\n\nТВОЙ ЧЕРНОВИК:\n" + comment
-            + "\n\nПерепиши черновик, сохранив мысль, формат и длину, но исправь: "
-            + ", ".join(cliches) + "."
-        )
-        rewritten = (await llm.generate_standalone(system_prompt, rewrite_prompt)).replace("*", "").strip()
-        if rewritten and not rewritten.startswith(("⛔️", "⚠️")):
-            comment = rewritten
-        left = find_cliches(comment)
-        if left:
-            logger.warning(f"⚠️ [Post] После переписывания остались клише: {left}")
-        claims = find_contact_claims(comment)
-        if claims:
-            # Выдуманное знакомство с реальным человеком не публикуем: лучше пропустить слот
-            raise ValueError(f"После переписывания осталось выдуманное знакомство: {claims}")
+            extra.append(f"сроки в прошлом ({', '.join(map(str, years))}): сегодня {today_ru()}, прогноз должен быть в будущем")
+    comment = await _polish(llm, system_prompt, user_prompt, comment, extra)
 
-    comment = humanize_punctuation(comment)
+    cta = bool(cta_handle) and needs_cta(history)
     meta = {
-        "format": fmt["id"], "tone": tone, "hook": hook,
+        "format": fmt["id"], "tone": tone, "hook": hook, "cta": cta,
         "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
-    return render_post_html(comment, news), meta
+    return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta
+
+
+async def generate_razbor(
+    llm, rag_service, core_beliefs: list, question: str, cta_handle: str | None = None
+) -> tuple[str, dict]:
+    """Рубрика «Разбор подписчика»: публичный ответ на вопрос читателя. Возвращает (html, метаданные)."""
+    rag_ctx = await rag_service.search(question, top_k=3)
+    beliefs_text = "\n".join(f"- {b}" for b in core_beliefs) if core_beliefs else "- нет"
+    knowledge = (
+        "[ПРОФЕССИОНАЛЬНАЯ БАЗА ЗНАНИЙ — ТОЛЬКО ДЛЯ ФОНА]\n"
+        f"{rag_ctx}\n\n"
+        "Не пересказывай истории из базы. Используй её как свою насмотренность: принципы, механику форматов, цифры."
+    ) if rag_ctx else ""
+    banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
+    system_prompt = f"""
+{Prompts.LORE}
+
+Ты ведёшь в своём Telegram-канале рубрику «{RAZBOR_TITLE}»: публично отвечаешь на вопрос читателя.
+ТВОИ ЧИТАТЕЛИ: {AUDIENCE}.
+Сегодня {today_ru()}.
+
+ТВОИ ВЗГЛЯДЫ (фон для суждений — НЕ цитируй эти формулировки):
+{beliefs_text}
+
+{knowledge}
+
+КАК ОТВЕЧАТЬ:
+1. К автору вопроса — на «вы». Ирония и прямота уместны, унижение нет.
+2. По-продюсерски: короткий диагноз, затем 2–4 конкретных шага с номерами «1)», «2)», «3)». Без заголовков, markdown и звёздочек.
+3. Только практическое: что сделать, в каком порядке и как понять, что сработало. Примеры из жизни малого бизнеса и авторских каналов.
+4. ДЛИНА: 1200–2200 символов без абзаца «Что забрать себе».
+5. {TAKEAWAY_RULE} Это вывод для всех читателей канала, не только для автора вопроса.
+6. Запрещённые обороты: {banned}. Мат — максимум одно слово, лучше без него.
+7. О реальных людях — только общеизвестное. Никаких «я с ним работал», «мы с ней снимали», «я его лично знал».
+8. Не пересказывай вопрос: он будет показан над ответом.
+"""
+    user_prompt = f"ВОПРОС ПОДПИСЧИКА:\n{question.strip()}"
+    answer = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
+    _ensure_generated(answer)
+    answer = await _polish(llm, system_prompt, user_prompt, answer)
+
+    cta = RAZBOR_CTA.format(bot=cta_handle) if cta_handle else None
+    meta = {"format": "razbor", "cta": bool(cta), "chars": len(answer), "text": answer, "question": question}
+    return render_razbor_html(question, answer, cta), meta
 
 
 def append_history(history: list[dict], meta: dict) -> list[dict]:
@@ -388,7 +544,7 @@ async def generate_followup(llm, post: dict, minutes_since: int) -> str:
     system_prompt = f"""
 {Prompts.LORE}
 
-Сегодня {today_ru()}. {_ago_ru(minutes_since)} назад ты опубликовал в своём Telegram-канале DeusExMedia пост.
+Сегодня {today_ru()}. {_ago_ru(minutes_since)} назад ты опубликовал в своём Telegram-канале пост.
 Сейчас ты пишешь к нему «добивку» — короткий ответ на собственный пост, как делают живые авторы каналов.
 
 ТИП ДОБИВКИ: {kind}.

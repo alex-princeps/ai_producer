@@ -51,5 +51,14 @@
   "file_too_big": "📜 The answer is too long, so here it is as a file.",
   "assistant_hint": "💡 <b>Assistant tip</b> ➡️ You might want to ask the maestro this (tap the text below to copy):\n\n<code>{text}</code>",
   "post_published": "✅ Post published to {channel} (format: {fmt}).",
-  "post_error": "❌ Failed to publish the post: {error}"
+  "post_error": "❌ Failed to publish the post: {error}",
+  "razbor_usage": "Write the subscriber's question after the command, for example:\n/razbor I run a home renovation channel, 300 subscribers, growth has stalled. What should I do? Olga, Kazan",
+  "razbor_wait": "✍️ Writing the breakdown, about a minute…",
+  "razbor_no_channel": "❌ No channel set: TG_CHANNEL_ID in .env.",
+  "razbor_published": "✅ Breakdown published to {channel}.",
+  "razbor_cancelled": "Draft deleted.",
+  "razbor_expired": "Draft not found: the bot was restarted. Send /razbor again.",
+  "btn_razbor_publish": "✅ Publish",
+  "btn_razbor_redo": "♻️ Another take",
+  "btn_razbor_cancel": "✖️ Cancel"
 }

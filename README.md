@@ -1,6 +1,6 @@
 # Aristarkh Gradov — an AI persona that thinks before it speaks
 
-A Telegram-native character agent: a cynical 55-year-old TV showrunner who has his own mood, remembers you, knows where he is right now, sometimes decides you are not worth an answer — and runs a Telegram channel on his own, three posts a day.
+A Telegram-native character agent: a cynical 55-year-old TV showrunner who has his own mood, remembers you, knows where he is right now, sometimes decides you are not worth an answer — and runs a Telegram channel on his own, two posts a day.
 
 It is not a chatbot with a long system prompt. Every message goes through a small **cognitive loop**: affective state update → decision about grounding → parallel recall from three memory layers → situational self-awareness → a private inner monologue → a reply that acts on that monologue without ever quoting it. While nobody is writing, he **lives**: reads the news, forms a thesis of the day, writes columns, sleeps, consolidates memory and slowly evolves his beliefs.
 
@@ -38,7 +38,8 @@ It is not a chatbot with a long system prompt. Every message goes through a smal
 | **Lie & topic-jump detection** | Changed facts ("the budget was 10M, not 5M") are cross-checked with semantic memory and called out; abrupt topic switches are noticed. | `prompts.py`, QA block 11 |
 | **Silent treatment** | If the private plan says the user is not worth it, the reply is literally nothing. The history records that he ignored you. | `main.py` |
 | **Autonomous life** | Morning agenda from the news with a self-assessed strength 0–10; nightly reflection and memory consolidation; weekly evolution of at most five core beliefs. | `morning_routine.py`, `worker_cron.py`, `evolution_engine.py` |
-| **Self-publishing columnist** | Telegram channels → an LLM editor picks one story *by index* (so the link and quote are real, not hallucinated) → a post in one of 9 formats (from a two-line jab to a producer's thought experiment) with a tone palette, stop-list of clichés and a rewrite pass, header with source link and monospace quote. Forecasts can't land in the past. | `news_module/` |
+| **Self-publishing columnist** | Telegram channels → an LLM editor picks one story *by index* (so the link and quote are real, not hallucinated) → a post in one of 9 formats (from a two-line jab to a producer's thought experiment) with a tone palette, stop-list of clichés and a rewrite pass, header with source link and a collapsed quote. Every post closes with a practical takeaway for the reader's own channel or business; every 4–5 posts links to the bot. A topic filter keeps politics, religion, children and LGBT out. Forecasts can't land in the past. | `news_module/` |
+| **Subscriber Q&A** | The admin sends `/razbor <question>` to the bot, gets a ready post as a preview with buttons (publish / another take / cancel), and publishes it to the channel in one tap. | `aristarkh_core/main.py` |
 | **Replies to himself** | A third of posts get a scheduled follow-up: 20 minutes to a day later he replies to his own post with a punchline, an afterthought or a bit of self-irony, like a real channel author. | `followup_cron.py` |
 | **Speaks your language** | Replies in the language the user writes in; buttons, invoices and system messages follow the user's Telegram language (Russian or English). | `prompts.py`, `i18n.py`, `locales/` |
 | **Human punctuation** | Deterministic post-processing, no tokens spent: em dashes, the tell-tale sign of machine text, become `-`, `=` or `:`, the way people actually type in messengers. | `humanize.py` |
@@ -84,8 +85,8 @@ Aristarkh lives in Moscow: his daily schedule uses Europe/Moscow, so run cron in
 
 ```cron
 0 2 * * *   cd aristarkh_core && PYTHONPATH=.. python worker_cron.py          # sleep, reflection, Sunday evolution
-30 8,13,17 * * * cd news_module && PYTHONPATH=.. python tg_news.py           # newsroom
-35 8,13,17 * * * cd news_module && PYTHONPATH=.. python publisher_cron.py    # columnist
+30 10,18 * * *   cd news_module && PYTHONPATH=.. python tg_news.py           # newsroom
+35 10,18 * * *   cd news_module && PYTHONPATH=.. python publisher_cron.py    # columnist
 50 * * * *  cd news_module && PYTHONPATH=.. python followup_cron.py           # replies to his own posts
 ```
 
