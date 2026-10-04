@@ -57,7 +57,7 @@
 
   <rect x="40" y="564" width="230" height="100" rx="14" class="card" stroke="#58a6ff"/>
   <text x="58" y="592" class="t">📣 Channel column</text>
-  <text x="58" y="616" class="s">3 posts a day, link + quote</text>
+  <text x="58" y="616" class="s">2 posts a day, link + quote</text>
   <text x="58" y="634" class="s">of the source, varied formats</text>
 
   <!-- arrows from interface to pipeline -->
