@@ -104,6 +104,22 @@ BANNED_PHRASES = [
 ]
 MAX_DILETANT = 1  # слово-маркер допустимо не больше одного раза за пост
 
+# Выдуманное личное знакомство с реальными людьми («я имел с ним дело», «мы с ней снимали»).
+# Срабатывание только отправляет пост на переписывание, поэтому шаблоны намеренно широкие.
+CONTACT_CLAIMS = re.compile(
+    r"\bя\s+(?:лично\s+)?имела?\s+(?:с\s+\w+\s+)?дело\b"
+    r"|\bя\s+(?:лично\s+)?(?:работал|снимал|продюсировал|знал|встречал|общался|дружил|пересекался)\w*"
+    r"\s+(?:с\s+)?(?:ним|ней|ними|его|её|ее|их)\b"
+    r"|\bмы\s+с\s+(?:ним|ней|ними)\b"
+    r"|\bлично\s+(?:знал|знаком|работал|общался)\w*"
+    r"|\bбыла?\s+(?:с\s+ним|с\s+ней|с\s+ними)\s+знаком\w*",
+    re.IGNORECASE,
+)
+CONTACT_FIX = (
+    "выдуманное личное знакомство с реальным человеком (встречи, совместная работа, разговоры) — "
+    "убери, оставь только публичные факты"
+)
+
 URL_RE = re.compile(r"https?://\S+")
 
 
@@ -133,6 +149,10 @@ def find_cliches(text: str) -> list[str]:
     if low.count("дилетант") > MAX_DILETANT:
         hits.append("дилетант (чаще одного раза)")
     return hits
+
+
+def find_contact_claims(text: str) -> list[str]:
+    return [m.group(0) for m in CONTACT_CLAIMS.finditer(text)]
 
 
 HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые заканчиваются вопросом к подписчикам
@@ -191,7 +211,7 @@ def build_system_prompt(
 4. Слово «дилетант» — максимум один раз, лучше ни разу.
 5. Мат — максимум одно слово и только если оно бьёт точнее любого другого. Чаще обходись без него.
 6. Не ссылайся на «статью», «новость из канала», «базу знаний». Ты не агрегатор: ты человек, у которого есть мнение.
-7. О реальных людях — только то, что есть в новости или общеизвестно. Не выдумывай встреч, разговоров и цитат с ними.
+7. О реальных людях — только то, что есть в новости или общеизвестно. Не выдумывай встреч, разговоров, совместной работы и цитат с ними: никаких «я имел с ним дело», «мы с ней снимали», «я его лично знал».
 8. Никаких обращений к конкретному собеседнику, никакой личной переписки, никакого «где я сейчас нахожусь».
 9. Без заголовков, без списков, без markdown и звёздочек. Обычный текст, абзацы по смыслу.
 10. Не пиши «Цитата», не повторяй текст новости — он будет показан над постом отдельно.
@@ -289,6 +309,8 @@ async def generate_post(
     comment = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(comment)
     problems = find_cliches(comment)
+    if find_contact_claims(comment):
+        problems.append(CONTACT_FIX)
     if fmt["id"] == "bet":
         years = past_years(comment, datetime.now(pytz.timezone("Europe/Moscow")).year)
         if years:
@@ -308,6 +330,10 @@ async def generate_post(
         left = find_cliches(comment)
         if left:
             logger.warning(f"⚠️ [Post] После переписывания остались клише: {left}")
+        claims = find_contact_claims(comment)
+        if claims:
+            # Выдуманное знакомство с реальным человеком не публикуем: лучше пропустить слот
+            raise ValueError(f"После переписывания осталось выдуманное знакомство: {claims}")
 
     comment = humanize_punctuation(comment)
     meta = {
@@ -373,9 +399,13 @@ async def generate_followup(llm, post: dict, minutes_since: int) -> str:
     user_prompt = f"ТВОЙ ПОСТ:\n{post.get('text', '').strip()}"
     text = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(text)
-    if find_cliches(text):
+    if find_cliches(text) or find_contact_claims(text):
         text = (await llm.generate_standalone(
-            system_prompt, user_prompt + "\n\nЧЕРНОВИК ДОБИВКИ:\n" + text + "\n\nПерепиши без запрещённых оборотов."
+            system_prompt,
+            user_prompt + "\n\nЧЕРНОВИК ДОБИВКИ:\n" + text
+            + "\n\nПерепиши без запрещённых оборотов и без выдуманного личного знакомства с реальными людьми.",
         )).replace("*", "").strip()
         _ensure_generated(text)
+        if find_contact_claims(text):
+            raise ValueError("В добивке осталось выдуманное знакомство с реальным человеком")
     return humanize_punctuation(text)
