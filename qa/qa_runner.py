@@ -574,7 +574,6 @@ async def run_suite(start_block: int):
         console.print("\n[yellow]▶ Блок 7: Публикация в канал (publisher_cron.py)[/yellow]")
         block_7_passed = True
         try:
-            channel_id = "@info_junk"
             fake_news = {
                 "current_digest": {
                     "content": "ОФИЦИАЛЬНО: Киркоров купил телеканал Муз-ТВ и уволил всех ведущих. Сделка подтверждена.",
@@ -589,6 +588,7 @@ async def run_suite(start_block: int):
             proc = await asyncio.create_subprocess_exec(
                 PYTHON_EXEC,
                 f"{BASE_DIR}/news_module/publisher_cron.py",
+                "--dry-run",  # QA никогда не публикует в настоящий канал
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )

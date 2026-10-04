@@ -13,13 +13,13 @@ from aristarkh_core.rag_chroma import RAGService
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
 from news_module.post_builder import append_history, generate_post, schedule_followup
 
-# ID твоего канала
-CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "@info_junk")
+# Канал для постов (задаётся только через .env)
+CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "")
 
 
 async def run_publisher(dry_run: bool = False, force_format: str | None = None):
     """
-    Автономный воркер для публикации постов в канал DeusExMedia (@info_junk).
+    Автономный воркер для публикации постов в канал из TG_CHANNEL_ID.
     
     Пайплайн:
     1. Читает свежую новость из tg_news.json (результат работы tg_news.py)
@@ -34,7 +34,10 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None):
     --dry-run: генерирует пост по текущей новости и печатает его, ничего не публикуя.
     """
     logger.info("🚀 [Publisher Cron] Запуск публикации поста для канала...")
-    
+    if not CHANNEL_ID and not dry_run:
+        logger.error("❌ [Publisher] TG_CHANNEL_ID не задан в .env.")
+        return
+
     base_dir = os.path.dirname(os.path.abspath(__file__))
     news_path = os.path.join(os.path.dirname(base_dir), "tg_news.json")
     
@@ -121,6 +124,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None):
             published_at = datetime.now(timezone.utc)
             followup_at = schedule_followup(published_at)
             post_meta.update({
+                "channel": CHANNEL_ID,
                 "message_id": sent_message.message_id,
                 "published_at": published_at.isoformat(),
                 "followup_at": followup_at.isoformat() if followup_at else None,

@@ -4,7 +4,7 @@ A Telegram-native character agent: a cynical 55-year-old TV showrunner who has h
 
 It is not a chatbot with a long system prompt. Every message goes through a small **cognitive loop**: affective state update → decision about grounding → parallel recall from three memory layers → situational self-awareness → a private inner monologue → a reply that acts on that monologue without ever quoting it. While nobody is writing, he **lives**: reads the news, forms a thesis of the day, writes columns, sleeps, consolidates memory and slowly evolves his beliefs.
 
-> Aristarkh speaks Russian by default and switches to your language: write to him in English and he answers in English, with a Russian word or two for flavor. The interface follows your Telegram language. His channel posts in Russian: [@info_junk](https://t.me/info_junk).
+> Aristarkh speaks Russian by default and switches to your language: write to him in English and he answers in English, with a Russian word or two for flavor. The interface follows your Telegram language. His channel posts in Russian: [@producer_gradov](https://t.me/producer_gradov).
 
 ![Architecture](docs/architecture.svg)
 

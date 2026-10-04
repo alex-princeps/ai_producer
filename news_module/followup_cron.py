@@ -4,6 +4,7 @@
 Время добивки решается при публикации (publisher_cron.py → post_history[].followup_at).
 Этот скрипт запускается по cron раз в час, находит самую старую «созревшую» добивку и публикует
 её ответом (reply) на исходный пост. За один запуск — максимум одна добивка.
+Добивки к постам из другого канала (в том числе опубликованным до смены TG_CHANNEL_ID) пропускаются.
 
 --dry-run: берёт последний пост (даже если добивка не запланирована), печатает текст, ничего не шлёт.
 """
@@ -23,16 +24,17 @@ from aristarkh_core.config import config, logger
 from aristarkh_core.gemini import LLMService
 from news_module.post_builder import generate_followup
 
-CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "@info_junk")
+CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "")
 NEWS_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tg_news.json")
 
 
-def _due_post(history: list[dict], now: datetime, dry_run: bool):
+def _due_post(history: list[dict], now: datetime, dry_run: bool, channel: str = CHANNEL_ID):
     if dry_run:
         return history[-1] if history else None
     due = [
         h for h in history
-        if h.get("followup_at") and not h.get("followup_done") and h.get("message_id")
+        if h.get("channel") == channel
+        and h.get("followup_at") and not h.get("followup_done") and h.get("message_id")
         and h.get("followup_attempts", 0) < 3
         and datetime.fromisoformat(h["followup_at"]) <= now
     ]
@@ -40,6 +42,9 @@ def _due_post(history: list[dict], now: datetime, dry_run: bool):
 
 
 async def run_followup(dry_run: bool = False) -> None:
+    if not CHANNEL_ID and not dry_run:
+        logger.error("❌ [Followup] TG_CHANNEL_ID не задан в .env.")
+        return
     if not os.path.exists(NEWS_PATH):
         return
     with open(NEWS_PATH, "r", encoding="utf-8") as f:
@@ -54,6 +59,12 @@ async def run_followup(dry_run: bool = False) -> None:
     published = datetime.fromisoformat(post["published_at"]) if post.get("published_at") else now
     minutes_since = max(1, int((now - published).total_seconds() // 60))
 
+    if not dry_run:
+        # Счётчик попыток сохраняем заранее: при сбое генерации или отправки не будем бесконечно повторять
+        post["followup_attempts"] = post.get("followup_attempts", 0) + 1
+        with open(NEWS_PATH, "w", encoding="utf-8") as f:
+            json.dump(news_data, f, ensure_ascii=False, indent=2)
+
     async with aiohttp.ClientSession() as session:
         llm = LLMService(config.GOOGLE_API_KEY)
         llm.http_session = session
@@ -62,11 +73,6 @@ async def run_followup(dry_run: bool = False) -> None:
     if dry_run:
         print(f"\n[DRY RUN] Добивка к посту {post.get('message_id')} (через {minutes_since} мин):\n{text}\n")
         return
-
-    # Счётчик попыток сохраняем до отправки: при сбое не будем бесконечно повторять
-    post["followup_attempts"] = post.get("followup_attempts", 0) + 1
-    with open(NEWS_PATH, "w", encoding="utf-8") as f:
-        json.dump(news_data, f, ensure_ascii=False, indent=2)
 
     proxy_url = os.getenv("PROXY_URL")
     bot_session = AiohttpSession(timeout=120, proxy=proxy_url) if proxy_url else AiohttpSession(timeout=120)

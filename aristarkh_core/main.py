@@ -80,8 +80,8 @@ evolution_engine = PersonaEvolutionEngine(config.GOOGLE_API_KEY)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AGENDA_PATH = os.path.join(BASE_DIR, "aristarkh_agenda.json")
 
-# [NEW] Канал для публикации авторских постов Аристарха
-CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "@info_junk") 
+# Канал для авторских постов Аристарха (задаётся только через .env)
+CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "")
 
 # --- STATES ---
 class BotStates(StatesGroup):
@@ -402,9 +402,10 @@ async def chat_handler(message: types.Message, state: FSMContext):
     if message.text in MENU_BUTTONS: return
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║  [NEW] БИФУРКАЦИЯ: ПУБЛИКАЦИИ В КАНАЛ (DeusExMedia / @info_junk)
+    # ║  ПУБЛИКАЦИЯ В КАНАЛ ВРУЧНУЮ: только администратор (ADMIN_ID)
     # ╚══════════════════════════════════════════════════════════════╝
-    if message.text and message.text.startswith("[ПУБЛИКАЦИЯ В КАНАЛ]"):
+    if (message.text and message.text.startswith("[ПУБЛИКАЦИЯ В КАНАЛ]")
+            and message.from_user.id == config.ADMIN_ID and CHANNEL_ID):
         await db_service.log_event(message.from_user.id, "CHANNEL_POST_REQUEST")
         wait_msg = await message.answer(i18n.get_text("wait_writing_post", lang))
         
