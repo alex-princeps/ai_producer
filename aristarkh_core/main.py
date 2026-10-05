@@ -13,7 +13,7 @@ import html
 import time  # [NEW] Внутренняя шкала времени Аристарха
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandObject
+from aiogram.filters import Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -32,7 +32,8 @@ import logging
 logger = logging.getLogger(__name__)
 import i18n
 from aristarkh_core.prompts import Prompts
-from aristarkh_core.database import DatabaseService
+from aristarkh_core.database import BRIEF_FIELDS, DatabaseService
+from aristarkh_core.reply_guard import polish_reply
 from aristarkh_core.rag_chroma import RAGService
 from aristarkh_core.gemini import LLMService
 from aristarkh_core.assistant import AssistantService 
@@ -88,8 +89,20 @@ CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "")
 class BotStates(StatesGroup):
     chatting = State()
     generating = State()  # [NEW] Режим блокировки — Аристарх думает
-    waiting_for_long_input = State() 
-    waiting_for_promo = State() 
+    waiting_for_long_input = State()
+    waiting_for_promo = State()
+
+
+class BriefStates(StatesGroup):
+    """Бриф проекта: по одному состоянию на вопрос, порядок как в BRIEF_FIELDS."""
+    niche = State()
+    audience = State()
+    goal = State()
+    channel = State()
+    constraints = State()
+
+
+BRIEF_STEPS = [getattr(BriefStates, f) for f in BRIEF_FIELDS]
 
 # --- [NEW] ГЛОБАЛЬНЫЕ БУФЕРЫ ДЛЯ DEBOUNCE (Анти-пулемет) ---
 debounce_tasks = {}
@@ -98,11 +111,16 @@ user_image_buffers = {}
 
 # --- KEYBOARDS ---
 def main_kb(lang: str) -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(keyboard=[[
-        KeyboardButton(text=i18n.get_text("btn_settings", lang)),
-        KeyboardButton(text=i18n.get_text("btn_balance", lang)),
-        KeyboardButton(text=i18n.get_text("btn_rest", lang)),
-    ]], resize_keyboard=True)
+    return ReplyKeyboardMarkup(keyboard=[
+        [
+            KeyboardButton(text=i18n.get_text("btn_brief", lang)),
+            KeyboardButton(text=i18n.get_text("btn_settings", lang)),
+        ],
+        [
+            KeyboardButton(text=i18n.get_text("btn_balance", lang)),
+            KeyboardButton(text=i18n.get_text("btn_rest", lang)),
+        ],
+    ], resize_keyboard=True)
 
 
 def cancel_kb(lang: str) -> ReplyKeyboardMarkup:
@@ -125,7 +143,8 @@ def settings_kb(t: float, lang: str) -> InlineKeyboardMarkup:
     ])
 
 
-MENU_BUTTONS = i18n.variants("btn_settings") | i18n.variants("btn_balance") | i18n.variants("btn_rest")
+MENU_BUTTONS = (i18n.variants("btn_settings") | i18n.variants("btn_balance") | i18n.variants("btn_rest")
+                | i18n.variants("btn_brief"))
 DONE_WORDS = {"все", "всё", "done", "готово"} | {v.lower() for v in i18n.variants("btn_done")}
 
 # --- UTILS: TEXT EXTRACTOR ---
@@ -237,6 +256,75 @@ async def cmd_start(message: types.Message, state: FSMContext):
     await state.set_state(BotStates.chatting)
     await state.update_data(interaction_count=0)
     await message.answer(welcome_text, reply_markup=main_kb(lang), parse_mode="Markdown")
+    if not await db_service.get_brief(message.from_user.id):
+        await message.answer(
+            i18n.get_text("brief_offer", lang),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text=i18n.get_text("btn_brief_start", lang), callback_data="brief_start")
+            ]]),
+        )
+
+# --- БРИФ ПРОЕКТА: 5 вопросов, ответы подмешиваются в контекст каждого запроса ---
+# Бриф не тратит запросы: это обычные сообщения без вызова модели.
+BRIEF_SKIP_WORDS = {"-", "—", "нет", "пропустить", "skip", "no"}
+BRIEF_LABELS = {
+    "niche": "Ниша и чем занимается",
+    "audience": "Аудитория",
+    "goal": "Цель на 1-3 месяца",
+    "channel": "Канал или площадка",
+    "constraints": "Ограничения и пожелания",
+}
+
+
+def format_brief(brief: dict | None) -> str:
+    lines = [f"- {BRIEF_LABELS[f]}: {brief[f]}" for f in BRIEF_FIELDS if brief and brief.get(f)]
+    return "[БРИФ ПРОЕКТА — опирайся на него в первую очередь]\n" + "\n".join(lines) if lines else ""
+
+
+async def start_brief(message: types.Message, state: FSMContext, lang: str):
+    await db_service.log_event(message.chat.id, "BRIEF_STARTED")
+    await state.set_state(BRIEF_STEPS[0])
+    await state.update_data(brief_answers={})
+    await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
+    await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang))
+
+
+@dp.message(Command("brief"))
+async def cmd_brief(message: types.Message, state: FSMContext):
+    await start_brief(message, state, i18n.user_lang(message.from_user))
+
+
+@dp.message(F.text.in_(i18n.variants("btn_brief")))
+async def brief_button(message: types.Message, state: FSMContext):
+    await start_brief(message, state, i18n.user_lang(message.from_user))
+
+
+@dp.callback_query(F.data == "brief_start")
+async def brief_start_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await start_brief(callback.message, state, i18n.user_lang(callback.from_user))
+
+
+@dp.message(StateFilter(*BRIEF_STEPS), F.text)
+async def brief_answer(message: types.Message, state: FSMContext):
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu"):
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("brief_cancelled", lang), reply_markup=main_kb(lang))
+        return
+    step = [s.state for s in BRIEF_STEPS].index(await state.get_state())
+    answers = (await state.get_data()).get("brief_answers", {})
+    answers[BRIEF_FIELDS[step]] = "" if message.text.strip().lower() in BRIEF_SKIP_WORDS else message.text
+    if step + 1 < len(BRIEF_STEPS):
+        await state.update_data(brief_answers=answers)
+        await state.set_state(BRIEF_STEPS[step + 1])
+        await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[step + 1]}", lang))
+        return
+    await db_service.save_brief(message.from_user.id, answers)
+    await db_service.log_event(message.from_user.id, "BRIEF_SAVED")
+    await state.update_data(brief_answers={})
+    await state.set_state(BotStates.chatting)
+    await message.answer(i18n.get_text("brief_saved", lang), reply_markup=main_kb(lang))
 
 # --- РУБРИКА «РАЗБОР ПОДПИСЧИКА»: только администратор ---
 # /razbor <вопрос> → Аристарх пишет разбор → превью с кнопками → публикация в канал.
@@ -701,12 +789,16 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         logger.info("🔎 [Router] Поиск отключен (болтовня — экономим токены)")
     
     # === МНОГОУРОВНЕВАЯ ПАМЯТЬ ===
-    rag_ctx, episodic_ctx, semantic_ctx = await asyncio.gather(
+    rag_ctx, episodic_ctx, semantic_ctx, brief = await asyncio.gather(
         rag_service.search(user_query),
         rag_service.search_episodic_memory(message.from_user.id, user_query),
-        semantic_memory.get_facts(message.from_user.id)
+        semantic_memory.get_facts(message.from_user.id),
+        db_service.get_brief(message.from_user.id),
     )
-    
+    brief_text = format_brief(brief)
+    if brief_text:
+        semantic_ctx = brief_text + ("\n\n" + semantic_ctx if semantic_ctx else "")
+
     # === ЧИТАЕМ УТРЕННЮЮ ПОВЕСТКУ ===
     agenda = {}
     if os.path.exists(AGENDA_PATH):
@@ -815,12 +907,14 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         search_results=search_results
     )
     
+    failed = False  # при сбое генерации запрос не списываем
     try:
         response_text = await llm_service.generate(
-            sys_prompt, user_query, rag_ctx, episodic_ctx, semantic_ctx, 
+            sys_prompt, user_query, rag_ctx, episodic_ctx, semantic_ctx,
             history[-40:], user.temperature, image_data, search_results
         )
-        
+        failed = response_text.startswith(("⚠️", "⛔️"))
+
         # [NEW] ПЕРЕХВАТЧИК ИГНОРА
         if "[IGNORE]" in response_text:
             logger.info(f"🔇 [ИГНОР] Аристарх молча проигнорировал юзера {message.from_user.id}")
@@ -846,8 +940,10 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             await state.set_state(BotStates.chatting)
             return
         
+        if not failed:
+            response_text = await polish_reply(llm_service, response_text, user_query)
         response_text = humanize_punctuation(response_text.replace('*', ''))
-        
+
         logger.info(f"📤 [ARISTARKH {message.from_user.id}]: {response_text[:500]}...")
         
         await db_service.log_event(message.from_user.id, "AI_RESPONSE_TEXT", response_text[:4000])
@@ -855,6 +951,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     except Exception as e:
         logger.error(f"Gen Error: {e}")
         response_text = i18n.get_text("generation_error", lang)
+        failed = True
         await db_service.log_event(message.from_user.id, "AI_RESPONSE_ERROR", str(e))
 
     try:
@@ -883,10 +980,15 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             f"interaction:{interaction_count}, history_len:{len(new_history)}"
         )
     
-    if not is_unlim:
+    if not is_unlim and not failed:
         await db_service.update_balance(message.from_user.id, -1)
 
     await send_smart_response(message, response_text)
+
+    # Один раз за сессию напоминаем про бриф тем, кто его ещё не заполнил
+    if not brief and not failed and not data.get("brief_hint_shown"):
+        await message.answer(i18n.get_text("brief_hint", lang))
+        await state.update_data(brief_hint_shown=True)
 
     try:
         suggestion = await assistant_service.generate_suggestion(new_history[-40:])

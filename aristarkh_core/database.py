@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, update
+from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Text, update
 from aristarkh_core.config import logger # Добавили логгер для отслеживания ошибок JSON
 
 Base = declarative_base()
@@ -44,6 +44,21 @@ class AnalyticsEvent(Base):
     event_data = Column(String, nullable=True) # Доп инфа (напр. 'docx_upload', 'temp_change_0.7')
     timestamp = Column(DateTime, default=datetime.utcnow)
 
+# Бриф проекта: 5 ответов пользователя, которые подмешиваются в контекст каждого запроса
+BRIEF_FIELDS = ("niche", "audience", "goal", "channel", "constraints")
+
+
+class Brief(Base):
+    __tablename__ = 'briefs'
+    user_id = Column(BigInteger, primary_key=True)
+    niche = Column(Text, nullable=True)
+    audience = Column(Text, nullable=True)
+    goal = Column(Text, nullable=True)
+    channel = Column(Text, nullable=True)
+    constraints = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class DatabaseService:
     def __init__(self, db_url):
         self.engine = create_async_engine(db_url, echo=False)
@@ -63,6 +78,20 @@ class DatabaseService:
     async def get_user(self, user_id: int):
         async with self.async_session() as session:
             return await session.get(User, user_id)
+
+    async def get_brief(self, user_id: int) -> dict | None:
+        async with self.async_session() as session:
+            brief = await session.get(Brief, user_id)
+            return {f: getattr(brief, f) for f in BRIEF_FIELDS} if brief else None
+
+    async def save_brief(self, user_id: int, answers: dict):
+        async with self.async_session() as session:
+            brief = await session.get(Brief, user_id) or Brief(user_id=user_id)
+            for f in BRIEF_FIELDS:
+                setattr(brief, f, (answers.get(f) or "").strip()[:2000] or None)
+            brief.updated_at = datetime.utcnow()
+            session.add(brief)
+            await session.commit()
 
     async def create_user(self, user_id: int, username: str, full_name: str):
         async with self.async_session() as session:
