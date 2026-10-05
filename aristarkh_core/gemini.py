@@ -292,6 +292,31 @@ class LLMService:
             if not self.http_session:
                 await session.close()
 
+    async def edit_text(self, instruction: str, text: str) -> str | None:
+        """Точечная правка готового текста дешёвой Flash-моделью. None, если правка не удалась."""
+        url = f"https://generativelanguage.googleapis.com/v1beta/{config.ASSISTANT_MODEL_NAME}:generateContent?key={self.api_key}"
+        payload = {
+            "systemInstruction": {"parts": [{"text": instruction}]},
+            "contents": [{"role": "user", "parts": [{"text": text}]}],
+            "safetySettings": self.safety_settings,
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192},
+        }
+        session = self.http_session or aiohttp.ClientSession()
+        try:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    edited = self._parse_response(await resp.json())
+                    if edited and not edited.startswith(("⛔️", "⚠️")):
+                        return edited.strip()
+                else:
+                    logger.error(f"Edit API Error: {resp.status} - {await resp.text()}")
+        except Exception as e:
+            logger.error(f"Edit error: {e}")
+        finally:
+            if not self.http_session:
+                await session.close()
+        return None
+
     # === [CRITICAL FIX] МЕТОД ГЕНЕРАЦИИ ВНУТРЕННЕГО МОНОЛОГА — XML ПАРСЕР С ТОЛЕРАНТНОСТЬЮ К ОБРЫВАМ ===
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(2))
     async def generate_monologue(self, system_prompt, user_query, episodic_context, semantic_context, history_context, search_results=""):
