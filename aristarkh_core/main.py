@@ -40,7 +40,7 @@ from aristarkh_core.assistant import AssistantService
 from semantic_memory import SemanticMemory
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
 from aristarkh_core.context_simulator import ContextSimulator  # [NEW] Симулятор среды обитания
-from news_module.post_builder import extract_url, generate_post, generate_razbor
+from news_module.post_builder import BOT_CTA_ENABLED, extract_url, generate_post, generate_razbor
 from aristarkh_core.humanize import humanize_punctuation
 import uuid
 
@@ -341,9 +341,10 @@ def razbor_kb(draft_id: str, lang: str) -> InlineKeyboardMarkup:
 
 
 async def make_razbor(question: str) -> str:
-    me = await bot.get_me()
+    # Ссылка на бота только при CHANNEL_BOT_CTA; иначе разбор зовёт писать вопросы в комментарии
+    cta_handle = f"@{(await bot.get_me()).username}" if BOT_CTA_ENABLED else None
     core_beliefs = evolution_engine.get_current_beliefs()
-    post_html, _ = await generate_razbor(llm_service, rag_service, core_beliefs, question, f"@{me.username}")
+    post_html, _ = await generate_razbor(llm_service, rag_service, core_beliefs, question, cta_handle)
     return post_html
 
 
