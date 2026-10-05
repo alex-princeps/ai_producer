@@ -45,6 +45,7 @@ tg_news.json
 news_module/tg_news.json
 *.json.lock
 *.json.tmp
+*.json.*.tmp
 columnist_day.json
 columnist_journal.json
 

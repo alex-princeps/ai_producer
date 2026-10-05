@@ -5,7 +5,8 @@
   Если файла нет, посты пишутся со старым коротким ядром Prompts.LORE.
 - «День Аристарха» создаётся раз в сутки по московскому времени и хранится в columnist_day.json:
   настроение (темперамент, инерция вчерашнего дня, день недели, погода, даты календаря),
-  сцена утра и вечера по его распорядку, реальная погода в Москве (Open-Meteo, без ключа).
+  сцена утра и вечера по его распорядку, реальная погода там, где он сегодня: в Москве, а на вторые выходные
+  месяца в Петербурге (Open-Meteo, без ключа). Погода старше двух часов перед постом обновляется.
 - Журнал личных заметок (columnist_journal.json): что он уже рассказывал о себе в канале.
 """
 
@@ -77,8 +78,11 @@ WMO = [
     ((45, 48), "туман"), ((51, 53, 55, 56, 57), "морось"), ((61, 63, 65, 66, 67), "дождь"),
     ((71, 73, 75, 77), "снег"), ((80, 81, 82), "ливень"), ((85, 86), "снегопад"), ((95, 96, 99), "гроза"),
 ]
-WEATHER_URL = ("https://api.open-meteo.com/v1/forecast?latitude=55.7558&longitude=37.6173"
+CITIES = {"Москва": (55.7558, 37.6173), "Петербург": (59.9343, 30.3351)}
+CITY_IN = {"Москва": "В Москве", "Петербург": "В Петербурге"}
+WEATHER_URL = ("https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
                "&current=temperature_2m,weather_code&timezone=Europe%2FMoscow")
+WEATHER_TTL = timedelta(hours=2)  # день могла создать ночная добивка: утренний пост не должен писать про ночную погоду
 
 
 def load_persona() -> str | None:
@@ -89,10 +93,11 @@ def load_persona() -> str | None:
         return None
 
 
-def fetch_weather() -> tuple[str | None, int | None]:
-    """Погода в Москве сейчас: («+9°, пасмурно», код WMO). При сбое (None, None)."""
+def fetch_weather(city: str = "Москва") -> tuple[str | None, int | None]:
+    """Погода в городе сейчас: («+9°, пасмурно», код WMO). При сбое (None, None)."""
+    lat, lon = CITIES.get(city, CITIES["Москва"])
     try:
-        cur = requests.get(WEATHER_URL, timeout=8).json()["current"]
+        cur = requests.get(WEATHER_URL.format(lat=lat, lon=lon), timeout=8).json()["current"]
         t, code = round(cur["temperature_2m"]), int(cur["weather_code"])
         desc = next((d for codes, d in WMO if code in codes), "")
         return f"{'+' if t > 0 else ''}{t}°" + (f", {desc}" if desc else ""), code
@@ -159,34 +164,55 @@ def _load_json(path: str, default):
 
 
 def _save_json(path: str, data):
-    with open(path, "w", encoding="utf-8") as f:
+    """Запись через временный файл: публикатор и добивка не прочитают друг у друга половину файла."""
+    tmp = f"{path}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def _weather_stale(day: dict, slot: str, now: datetime) -> bool:
+    at = (day.get("weather_at") or {}).get(slot)
+    if not day["weather"].get(slot) or not at:
+        return True
+    return now - datetime.fromisoformat(at) > WEATHER_TTL
 
 
 def get_day(now: datetime | None = None, fetch: bool = True) -> dict:
-    """День Аристарха: создаётся при первом обращении за сутки, погода подтягивается для текущего слота."""
+    """
+    День Аристарха: создаётся при первом обращении за сутки (пост или добивка).
+    Погода текущего слота подтягивается, если её нет или она старше WEATHER_TTL.
+    """
     now = now or datetime.now(MSK)
     today, slot = now.date(), slot_of(now)
     day = _load_json(DAY_PATH, {})
     if day.get("date") != today.isoformat():
-        weather, code = fetch_weather() if fetch else (None, None)
-        rng = random.Random(f"{today.isoformat()}-aristarkh")
         kind = _day_kind(today)
+        city = "Петербург" if kind.startswith("спб") else "Москва"
+        weather, code = fetch_weather(city) if fetch else (None, None)
+        rng = random.Random(f"{today.isoformat()}-aristarkh")
         _, note, skip_evening = _calendar(today)
         day = {
             "date": today.isoformat(),
             "weekday": WEEKDAYS[today.weekday()],
+            "city": city,
             "mood": _pick_mood(today, day.get("mood"), code, weather, rng),
             "note": note,
             "skip_evening": skip_evening,
             "scenes": {s: rng.choice(SCENES[(kind, s)]) for s in ("morning", "evening")},
-            "weather": {"morning": weather if slot == "morning" else None,
-                        "evening": weather if slot == "evening" else None},
+            "weather": {"morning": None, "evening": None},
+            "weather_at": {},
         }
+        if weather:
+            day["weather"][slot], day["weather_at"][slot] = weather, now.isoformat()
         _save_json(DAY_PATH, day)
-        logger.info(f"🗓️ [Columnist] Новый день: {day['weekday']}, настроение «{day['mood']}», {weather or 'погода неизвестна'}")
-    elif fetch and not day["weather"].get(slot):
-        day["weather"][slot], _ = fetch_weather()
+        logger.info(f"🗓️ [Columnist] Новый день: {day['weekday']}, {city}, настроение «{day['mood']}», "
+                    f"{weather or 'погода неизвестна'}")
+    elif fetch and _weather_stale(day, slot, now):
+        weather, _ = fetch_weather(day.get("city", "Москва"))
+        # Не удалось обновить — лучше без погоды, чем с устаревшей
+        day["weather"][slot] = weather
+        day.setdefault("weather_at", {})[slot] = now.isoformat() if weather else None
         _save_json(DAY_PATH, day)
     return day
 
@@ -201,7 +227,7 @@ def describe_day(day: dict, slot: str, mention_allowed: bool) -> str:
     lines = [
         "[ТВОЙ ДЕНЬ — фон, а не тема поста]",
         f"Сегодня {day['weekday']}, {d.day} {MONTHS[d.month - 1]}."
-        + (f" В Москве сейчас {day['weather'][slot]}." if day["weather"].get(slot) else ""),
+        + (f" {CITY_IN.get(day.get('city'), 'В Москве')} сейчас {day['weather'][slot]}." if day["weather"].get(slot) else ""),
         f"Настроение дня: {day['mood']}.",
         f"Где ты и что делаешь: {day['scenes'][slot]}.",
         ("Можешь мимоходом, одной фразой в середине или в конце, упомянуть что-то из своего дня или погоду, "
