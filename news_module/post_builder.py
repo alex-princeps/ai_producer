@@ -29,6 +29,7 @@ import pytz
 from aristarkh_core.config import logger
 from aristarkh_core.humanize import humanize_punctuation
 from aristarkh_core.prompts import Prompts
+from news_module import columnist
 
 TELEGRAM_LIMIT = 4096
 QUOTE_MAX_CHARS = 500
@@ -93,7 +94,7 @@ POST_FORMATS = [
     {
         "id": "memory",
         "name": "Отзвук",
-        "instruction": "Как эта новость отозвалась лично в тебе: ассоциация, настроение, воспоминание о девяностых или нулевых в общих чертах — без имён реальных людей и без выдуманных встреч с ними.",
+        "instruction": "Как эта новость отозвалась лично в тебе: ассоциация, настроение, воспоминание из твоей жизни (только из того, что ты можешь рассказывать о себе) — без имён реальных людей и без выдуманных встреч с ними.",
         "length": (500, 1100), "story": False, "weight": 1,
     },
 ]
@@ -111,6 +112,8 @@ BANNED_PHRASES = [
     "индустрия переполнена", "святая наивность", "творческая импотенция",
     "продюсерская импотенция", "давайте будем честны", "на секундочку",
     "вызывает у меня лишь", "брезгливое разочарование",
+    # обороты, по которым читатель узнаёт текст нейросети
+    "давайте разбер", "давайте посмотрим", "важно понимать", "стоит отметить", "в заключение", "подводя итог",
 ]
 MAX_DILETANT = 1  # слово-маркер допустимо не больше одного раза за пост
 
@@ -166,6 +169,9 @@ def find_contact_claims(text: str) -> list[str]:
 
 
 HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые задают вопрос подписчикам
+DAY_MENTION_PROBABILITY = 0.3  # в скольких постах можно мимоходом упомянуть свой день или погоду
+CALLBACK_PROBABILITY = 0.15    # в скольких постах можно сослаться на свой недавний пост
+PERSONAL_HOOK_PROBABILITY = 0.3  # личная заметка заканчивается вопросом к читателям
 
 # Вывод для читателя в конце поста: своими словами, без рубрик-меток (канал — голос живого автора)
 TAKEAWAY_RULE = (
@@ -224,7 +230,8 @@ def clean_quote(text: str) -> str:
 
 
 def build_system_prompt(
-    fmt: dict, tone: str, core_beliefs: list, rag_context: str, recent_openings: list[str], hook: bool = False
+    fmt: dict, tone: str, core_beliefs: list, rag_context: str, recent_openings: list[str], hook: bool = False,
+    persona: str | None = None, day_block: str = "", recent_block: str = "",
 ) -> str:
     beliefs_text = "\n".join(f"- {b}" for b in core_beliefs) if core_beliefs else "- нет"
     openings = "\n".join(f"- «{o}»" for o in recent_openings) if recent_openings else "- (постов ещё не было)"
@@ -254,19 +261,30 @@ def build_system_prompt(
         "на который хочется ответить в комментариях.\n"
         if hook else ""
     )
+    # С файлом личности взгляды берутся из его КРЕДО; без файла — из «эволюции убеждений»
+    views = "" if persona else (
+        "ТВОИ ВЗГЛЯДЫ (фон для суждений — НЕ цитируй эти формулировки и не пересказывай их):\n" + beliefs_text
+    )
+    voice_rule = (
+        "13. Пиши голосом из блока ГОЛОС. О себе — только то, что есть в блоке «ЧТО Я МОГУ РАССКАЗЫВАТЬ О СЕБЕ», "
+        "и никогда то, что в блоке «ЧЕГО Я В КАНАЛЕ НЕ КАСАЮСЬ НИКОГДА».\n" if persona else ""
+    )
     return f"""
-{Prompts.LORE}
+{persona or Prompts.LORE}
 
 Ты пишешь пост в свой авторский Telegram-канал — комментарий к новости.
 ТВОИ ЧИТАТЕЛИ: {AUDIENCE}. Им интересно, как устроены медиа, и что из этого можно применить у себя.
 Сегодня {today_ru()}. Все сроки и прогнозы считай от этой даты.
 
+{day_block}
+
+{recent_block}
+
 ФОРМАТ ЭТОГО ПОСТА: «{fmt['name']}». {fmt['instruction']}
 ДЛИНА: {lo}–{hi} символов без финального вывода для читателя. Это жёсткое требование: не длиннее.
 ТОН ЭТОГО ПОСТА: {tone}. Если этот тон совсем не ложится на новость, выбери ближайший уместный.
 
-ТВОИ ВЗГЛЯДЫ (фон для суждений — НЕ цитируй эти формулировки и не пересказывай их):
-{beliefs_text}
+{views}
 
 {knowledge}
 
@@ -279,11 +297,11 @@ def build_system_prompt(
 5. Мат — максимум одно слово и только если оно бьёт точнее любого другого. Чаще обходись без него.
 6. Не ссылайся на «статью», «новость из канала», «базу знаний». Ты не агрегатор: ты человек, у которого есть мнение.
 7. О реальных людях — только то, что есть в новости или общеизвестно. Не выдумывай встреч, разговоров, совместной работы и цитат с ними: никаких «я имел с ним дело», «мы с ней снимали», «я его лично знал».
-8. Никаких обращений к конкретному собеседнику, никакой личной переписки, никакого «где я сейчас нахожусь».
+8. Никаких обращений к конкретному собеседнику и личной переписки. О своём дне и погоде — только если это разрешено в блоке «ТВОЙ ДЕНЬ», мимоходом.
 9. Без заголовков, без списков, без markdown и звёздочек. Обычный текст, абзацы по смыслу.
 10. Не пиши «Цитата», не повторяй текст новости — он будет показан над постом отдельно.
 11. {TAKEAWAY_RULE}
-{hook_rule}"""
+{hook_rule}{voice_rule}"""
 
 
 def build_user_prompt(news: dict) -> str:
@@ -418,15 +436,28 @@ async def generate_post(
     """
     forced = [f for f in POST_FORMATS if f["id"] == force_format]
     fmt = forced[0] if forced else choose_format([h.get("format", "") for h in history])
-    tone = choose_tone(history[-1].get("tone") if history else None)
+    last_tone = history[-1].get("tone") if history else None
     query = news.get("content", "") or news.get("original_text", "")
     rag_ctx = await rag_service.search(query, top_k=3)
     recent_openings = [h["opening"] for h in history[-6:] if h.get("opening")]
 
+    # Живой колумнист: личность из приватного файла, настроение и сцена дня, память о своих постах
+    persona, day, day_block, recent_block = columnist.load_persona(), None, "", ""
+    if persona:
+        now = datetime.now(columnist.MSK)
+        day = columnist.get_day(now)
+        tone = columnist.pick_tone(day, last_tone)
+        day_block = columnist.describe_day(day, columnist.slot_of(now), random.random() < DAY_MENTION_PROBABILITY)
+        recent_block = columnist.recent_posts_block(history, random.random() < CALLBACK_PROBABILITY)
+    else:
+        tone = choose_tone(last_tone)
+
     hook = fmt["id"] != "question" and random.random() < HOOK_PROBABILITY
-    system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook)
+    system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook,
+                                        persona=persona, day_block=day_block, recent_block=recent_block)
     user_prompt = build_user_prompt(news)
-    logger.info(f"✍️ [Post] Формат: {fmt['name']}, тон: {tone}, база знаний: {'да' if rag_ctx else 'нет'}")
+    logger.info(f"✍️ [Post] Формат: {fmt['name']}, тон: {tone}, настроение: {day['mood'] if day else '-'}, "
+                f"база знаний: {'да' if rag_ctx else 'нет'}")
 
     comment = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(comment)
@@ -439,10 +470,59 @@ async def generate_post(
 
     cta = bool(cta_handle) and needs_cta(history)
     meta = {
-        "format": fmt["id"], "tone": tone, "hook": hook, "cta": cta,
+        "format": fmt["id"], "tone": tone, "mood": day["mood"] if day else None, "hook": hook, "cta": cta,
         "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
     return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta
+
+
+async def generate_personal(llm, history: list[dict]) -> tuple[str, dict]:
+    """«Личное»: короткая заметка о своём дне или неделе, без новости. Только при файле личности."""
+    persona = columnist.load_persona()
+    if not persona:
+        raise ValueError("Нет файла личности колумниста: личные заметки не пишем")
+    now = datetime.now(columnist.MSK)
+    day = columnist.get_day(now)
+    tone = columnist.pick_tone(day, history[-1].get("tone") if history else None)
+    told = "\n".join(f"- {e['date']}: {e['text'][:300]}" for e in columnist.journal_recent(4)) \
+        or "- (личных заметок ещё не было)"
+    ending = ("Закончи коротким вопросом к читателям." if random.random() < PERSONAL_HOOK_PROBABILITY
+              else "Без вопроса к читателям в конце.")
+    banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
+    system_prompt = f"""
+{persona}
+
+Ты пишешь в свой Telegram-канал короткую личную заметку: не про новость, а про себя — момент из своего дня
+или недели и мысль, которая из него выросла. Так живые авторы иногда пишут вне рубрик.
+Сегодня {today_ru()}.
+
+{columnist.describe_day(day, columnist.slot_of(now), True)}
+
+[ЧТО ТЫ УЖЕ РАССКАЗЫВАЛ О СЕБЕ В КАНАЛЕ — не повторяйся и не противоречь]
+{told}
+
+{columnist.recent_posts_block(history, False)}
+
+КАК ПИСАТЬ:
+1. 350–800 символов. Один момент, одна мысль. Без морали в конце и без рубрик-меток.
+   Не начинай с кофе и погоды: войди в заметку через сам момент или мысль.
+2. Тема одна, на выбор: работа над чужим проектом в общих чертах, книга или фильм, которые перечитываешь
+   или пересматриваешь, солдатики и диорама, город и погода, Петербург, профессия и время, возраст
+   и самоирония, путешествия. Бери только то, что есть в «ЧТО Я МОГУ РАССКАЗЫВАТЬ О СЕБЕ», и мелкие бытовые детали дня.
+3. Не касайся того, что в блоке «ЧЕГО Я В КАНАЛЕ НЕ КАСАЮСЬ НИКОГДА». Не выдумывай встреч, разговоров
+   и совместной работы с реальными людьми.
+4. Тон: {tone}. Настроение дня: {day['mood']}.
+5. Голос из блока ГОЛОС. Без заголовков, списков, markdown и звёздочек.
+6. {ending}
+7. Запрещённые обороты: {banned}.
+"""
+    user_prompt = "Напиши личную заметку для канала."
+    text = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
+    _ensure_generated(text)
+    text = await _polish(llm, system_prompt, user_prompt, text)
+    meta = {"format": "personal", "tone": tone, "mood": day["mood"], "hook": False, "cta": False,
+            "opening": _opening(text), "chars": len(text), "text": text}
+    return html.escape(text), meta
 
 
 async def generate_razbor(
@@ -457,15 +537,16 @@ async def generate_razbor(
         "Не пересказывай истории из базы. Используй её как свою насмотренность: принципы, механику форматов, цифры."
     ) if rag_ctx else ""
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
+    persona = columnist.load_persona()
+    views = "" if persona else f"ТВОИ ВЗГЛЯДЫ (фон для суждений — НЕ цитируй эти формулировки):\n{beliefs_text}"
     system_prompt = f"""
-{Prompts.LORE}
+{persona or Prompts.LORE}
 
 Ты ведёшь в своём Telegram-канале рубрику «{RAZBOR_TITLE}»: публично отвечаешь на вопрос читателя.
 ТВОИ ЧИТАТЕЛИ: {AUDIENCE}.
 Сегодня {today_ru()}.
 
-ТВОИ ВЗГЛЯДЫ (фон для суждений — НЕ цитируй эти формулировки):
-{beliefs_text}
+{views}
 
 {knowledge}
 
@@ -532,10 +613,12 @@ async def generate_followup(llm, post: dict, minutes_since: int) -> str:
     """Короткая добивка (1–2 предложения) к собственному посту."""
     kind = random.choice(FOLLOWUP_KINDS)
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
+    persona = columnist.load_persona()
+    mood_line = f"Настроение сейчас: {columnist.get_day()['mood']}.\n" if persona else ""
     system_prompt = f"""
-{Prompts.LORE}
+{persona or Prompts.LORE}
 
-Сегодня {today_ru()}. {_ago_ru(minutes_since)} назад ты опубликовал в своём Telegram-канале пост.
+{mood_line}Сегодня {today_ru()}. {_ago_ru(minutes_since)} назад ты опубликовал в своём Telegram-канале пост.
 Сейчас ты пишешь к нему «добивку» — короткий ответ на собственный пост, как делают живые авторы каналов.
 
 ТИП ДОБИВКИ: {kind}.

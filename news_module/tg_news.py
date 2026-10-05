@@ -7,6 +7,8 @@ from bs4 import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
 
+from news_module.state_io import update_json
+
 # Загружаем переменные окружения из .env файла бота
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
@@ -59,36 +61,17 @@ def save_to_json(data: dict):
     Args:
         data: словарь с данными для сохранения
     """
-    try:
-        # Загружаем старые данные, если файл существует
-        if os.path.exists(JSON_FILENAME):
-            with open(JSON_FILENAME, 'r', encoding='utf-8') as f:
-                try:
-                    old_data = json.load(f)
-                except json.JSONDecodeError:
-                    old_data = {}
-        else:
-            old_data = {}
-
-        # Обработка digest (главная новость)
+    def merge(old_data: dict):
+        # Обработка digest (главная новость): история дайджестов и текущая новость
         if "digest" in data:
-            # Сохраняем историю дайджестов
-            if "digests_history" not in old_data:
-                old_data["digests_history"] = []
-            
-            old_data["digests_history"].append(data["digest"])
-            if len(old_data["digests_history"]) > 30:
-                old_data["digests_history"] = old_data["digests_history"][-30:]
-            
+            old_data["digests_history"] = (old_data.get("digests_history", []) + [data["digest"]])[-30:]
             old_data["current_digest"] = data["digest"]
-        
         # Обновляем остальные данные
         old_data.update(data)
-        
-        # Сохраняем
-        with open(JSON_FILENAME, 'w', encoding='utf-8') as f:
-            json.dump(old_data, f, ensure_ascii=False, indent=2)
-        
+
+    try:
+        # Под блокировкой: публикатор и добивки пишут тот же файл
+        update_json(JSON_FILENAME, merge)
         print(f"💾 Данные сохранены в {JSON_FILENAME}")
     
     except Exception as e:
