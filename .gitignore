@@ -43,6 +43,13 @@ aristarkh_core/aristarkh_agenda.json
 aristarkh_core/aristarkh_core_beliefs.json
 tg_news.json
 news_module/tg_news.json
+*.json.lock
+*.json.tmp
+columnist_day.json
+columnist_journal.json
+
+# Persona data stays private: the public engine ships without it
+persona_private/
 
 # Logs and backups
 *.log
