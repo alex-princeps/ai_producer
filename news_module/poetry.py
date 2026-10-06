@@ -104,7 +104,9 @@ def _lines(entry: dict) -> list[list[str]]:
 
 
 def _post_lines(text: str) -> list[list[str]]:
-    return [ln.split() for ln in (norm(x) for x in re.split(r"\n| / ", text or "")) if ln]
+    """Строки поста (по переносам и « / ») плюс отдельно всё, что стоит в «ёлочках»: так цитата внутри прозы тоже строка."""
+    parts = re.split(r"\n| / ", text or "") + re.findall(r"«([^»]*)»", text or "")
+    return [ln.split() for ln in (norm(x) for x in parts) if ln]
 
 
 def _find(seq: list[str], sub: list[str]) -> int:
@@ -144,8 +146,9 @@ def check(text: str, entries: list[dict], near_entries: list[dict] | None = None
     """
     Цитата из стихов в тексте: ("ok", фрагмент), ("misquote", фрагмент) или ("absent", None).
     - ok: хотя бы одна строка фрагмента из entries стоит в тексте дословно (регистр, ё и пунктуация не важны).
-    - misquote: строка фрагмента из near_entries (по умолчанию entries) почти есть: по порядку совпали все слова,
-      кроме одного, или слово стоит в другой форме («на расстоянии» вместо «на расстояньи»).
+    - misquote: строка фрагмента из near_entries (по умолчанию entries) почти есть в стихоподобной строке поста
+      (не длиннее строки стиха больше чем на три слова): по порядку совпали все слова, кроме одного,
+      или слово стоит в другой форме («на расстоянии» вместо «на расстояньи»).
       Дословные строки перед этой проверкой вырезаются, чтобы точная цитата одного стиха
       не выглядела неточной цитатой другого.
     """
@@ -168,8 +171,10 @@ def check(text: str, entries: list[dict], near_entries: list[dict] | None = None
                     post[i:i + len(line)] = ["|"]
                     i = _find(post, line)
         masked.append(post)
+    # Неточность ищется только в стихоподобных строках: отдельная короткая строка или текст в «ёлочках».
+    # Длинная фраза прозы с тремя словами из стиха («Не каждому дано держать сериал...») - аллюзия, а не цитата
     for entry in near_entries:
-        if any(_near(line, post) for line in _lines(entry) for post in masked):
+        if any(_near(line, post) for line in _lines(entry) for post in masked if len(post) <= len(line) + 3):
             return "misquote", entry
     return ("ok", found) if found else ("absent", None)
 
