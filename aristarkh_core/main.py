@@ -994,7 +994,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     try:
         suggestion = await assistant_service.generate_suggestion(new_history[-40:])
         if suggestion:
-            clean_suggestion = html.escape(suggestion.strip())
+            clean_suggestion = html.escape(humanize_punctuation(suggestion.strip()))
             suggestion_msg = i18n.get_text("assistant_hint", lang, text=clean_suggestion)
             await message.answer(suggestion_msg, parse_mode="HTML")
             await db_service.log_event(message.from_user.id, "ASSISTANT_SUGGESTION_SENT", suggestion)

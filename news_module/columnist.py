@@ -50,7 +50,7 @@ WEEKDAY_WEIGHTS = {
 }
 GREY_WEATHER = {3, 45, 48, 51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 71, 73, 75, 77, 80, 81, 82, 85, 86, 95, 96, 99}
 
-# Сцены по распорядку дня (библия, §9.3–9.4). Петербург — на вторые выходные месяца.
+# Сцены по распорядку дня (библия, §9.3–9.4). Петербург - на вторые выходные месяца.
 SCENES = {
     ("будни", "morning"): [
         "утро: только что сварил кофе в турке, листаешь каналы и делаешь пометки",
@@ -210,7 +210,7 @@ def get_day(now: datetime | None = None, fetch: bool = True) -> dict:
                     f"{weather or 'погода неизвестна'}")
     elif fetch and _weather_stale(day, slot, now):
         weather, _ = fetch_weather(day.get("city", "Москва"))
-        # Не удалось обновить — лучше без погоды, чем с устаревшей
+        # Не удалось обновить - лучше без погоды, чем с устаревшей
         day["weather"][slot] = weather
         day.setdefault("weather_at", {})[slot] = now.isoformat() if weather else None
         _save_json(DAY_PATH, day)
@@ -225,7 +225,7 @@ def pick_tone(day: dict, last_tone: str | None, rng=random) -> str:
 def describe_day(day: dict, slot: str, mention_allowed: bool) -> str:
     d = date.fromisoformat(day["date"])
     lines = [
-        "[ТВОЙ ДЕНЬ — фон, а не тема поста]",
+        "[ТВОЙ ДЕНЬ - фон, а не тема поста]",
         f"Сегодня {day['weekday']}, {d.day} {MONTHS[d.month - 1]}."
         + (f" {CITY_IN.get(day.get('city'), 'В Москве')} сейчас {day['weather'][slot]}." if day["weather"].get(slot) else ""),
         f"Настроение дня: {day['mood']}.",

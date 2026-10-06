@@ -12,10 +12,11 @@ import re
 # Как заменяется тире между словами (« — »): дефис чаще всего, иногда «=» или двоеточие
 DASH_STYLES = ((" - ", 0.7), (" = ", 0.15), (": ", 0.15))
 
-_SPACED_DASH = re.compile(r"[  ]+[—–][  ]+")
-_LINE_START_DASH = re.compile(r"(?m)^([ \t]*)[—–][  ]*")
-_NUM_RANGE = re.compile(r"(?<=\d)[—–](?=\d)")
-_ANY_DASH = re.compile(r"[—–]")
+# Длинное (—), среднее (–), цифровое (‒) тире и горизонтальная черта (―)
+_SPACED_DASH = re.compile(r"[  ]+[—–‒―][  ]+")
+_LINE_START_DASH = re.compile(r"(?m)^([ \t]*)[—–‒―][  ]*")
+_NUM_RANGE = re.compile(r"(?<=\d)[—–‒―](?=\d)")
+_ANY_DASH = re.compile(r"[—–‒―]")
 
 
 def humanize_punctuation(text: str, rng: random.Random | None = None) -> str:

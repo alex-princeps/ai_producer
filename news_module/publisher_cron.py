@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import aiohttp
+import html
 import json
 import os
 import random
@@ -12,7 +13,7 @@ from aristarkh_core.config import config, logger
 from aristarkh_core.gemini import LLMService
 from aristarkh_core.rag_chroma import RAGService
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
-from news_module import columnist
+from news_module import columnist, poetry, typos
 from news_module.state_io import update_json
 from news_module.post_builder import (
     BOT_CTA_ENABLED, append_history, generate_personal, generate_post, schedule_followup,
@@ -32,10 +33,41 @@ def _env_float(name: str, default: float = 0.0) -> float:
 # Ритм живого автора: разброс времени публикации и личная заметка воскресным вечером (по умолчанию выключены)
 PUBLISH_JITTER_MIN = _env_float("PUBLISH_JITTER_MIN")
 PERSONAL_SUNDAY_PROB = _env_float("PERSONAL_SUNDAY_PROB")
+# Редкая опечатка, которую автор через несколько минут правит редактированием поста (по умолчанию выключена)
+TYPO_PROB = _env_float("TYPO_PROB")
+TYPO_FIX_MINUTES = (2, 25, 6)  # мин, макс, чаще всего: треугольное распределение
+
+
+def _with_typo(channel_post: str, post_meta: dict) -> tuple[str, dict] | None:
+    """HTML поста с одной опечаткой в тексте автора (шапка и цитата новости не трогаются) или None."""
+    text = (post_meta.get("text") or "").strip()
+    escaped = html.escape(text)
+    if not text or channel_post.count(escaped) != 1:
+        return None
+    # Защищены все строки банка цитат, а не только записанной цитаты: стих в посте не трогаем никогда
+    verse = [line for entry in poetry.load_bank() for line in entry["lines"].split("\n")]
+    made = typos.make_typo(text, verse)
+    if not made:
+        return None
+    typo_text, info = made
+    return channel_post.replace(escaped, html.escape(typo_text), 1), info
+
+
+async def _fix_typo(bot: Bot, news_path: str, message_id: int, correct_html: str):
+    """Через несколько минут автор «замечает» опечатку и правит пост: в канале появляется пометка «изменено»."""
+    delay = random.triangular(*TYPO_FIX_MINUTES)
+    logger.info(f"✏️ [Publisher] Опечатку заметит через {delay:.0f} мин.")
+    await asyncio.sleep(delay * 60)
+    if await typos.edit_back(bot, CHANNEL_ID, message_id, correct_html):
+        typos.mark_typo_fixed(news_path, CHANNEL_ID, message_id)
+        logger.info("✅ [Publisher] Опечатка исправлена правкой поста.")
+    else:
+        logger.error("❌ [Publisher] Не удалось исправить опечатку: повторит followup_cron.")
 
 
 async def run_publisher(dry_run: bool = False, force_format: str | None = None,
-                        force_personal: bool = False, no_jitter: bool = False):
+                        force_personal: bool = False, no_jitter: bool = False,
+                        force_typo: bool = False, force_poetry: bool = False):
     """
     Автономный воркер для публикации постов в канал из TG_CHANNEL_ID.
 
@@ -48,9 +80,12 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     5. Добавляет шапку: ссылка на новость + свёрнутая цитата оригинала
     6. Пушит в канал через Telegram Bot API (HTML, без превью ссылки)
     7. Помечает новость как опубликованную и сохраняет историю постов
+    8. Если выпала опечатка (TYPO_PROB): пост уходит с ней, а через 2-25 минут правится
 
     --dry-run: генерирует пост и печатает его, ничего не публикуя и не пропуская.
     --personal: личная заметка вместо поста по новости.
+    --typo: опечатка обязательно (в --dry-run показывает, как выглядел бы пост с ней).
+    --poetry: цитата из стихов обязательно (если есть банк цитат).
     """
     logger.info("🚀 [Publisher Cron] Запуск публикации поста для канала...")
     if not CHANNEL_ID and not dry_run:
@@ -136,32 +171,42 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
             if personal:
                 # === Личная заметка: без новости, без шапки, без добивки ===
                 logger.info("🧠 [Publisher] Аристарх пишет личную заметку...")
-                channel_post, post_meta = await generate_personal(llm, history)
+                channel_post, post_meta = await generate_personal(llm, history, poetry_mode=force_poetry or None)
             else:
                 # === ШАГ 4: Core Beliefs (фон для суждений, если нет файла личности) ===
                 core_beliefs = evolution_engine.get_current_beliefs()
                 logger.info(f"🧬 [Publisher] Загружено убеждений: {len(core_beliefs)}")
 
                 # === ШАГ 5: Генерация поста (формат, тон, анти-клише, RAG, шапка со ссылкой) ===
-                # Ссылка на бота в постах только при CHANNEL_BOT_CTA: по умолчанию канал — витрина личности
+                # Ссылка на бота в постах только при CHANNEL_BOT_CTA: по умолчанию канал - витрина личности
                 cta_handle = f"@{(await bot.get_me()).username}" if BOT_CTA_ENABLED else None
                 logger.info("🧠 [Publisher] Аристарх пишет пост...")
                 channel_post, post_meta = await generate_post(
-                    llm, rag_service, core_beliefs, digest, history, force_format, cta_handle=cta_handle
+                    llm, rag_service, core_beliefs, digest, history, force_format, cta_handle=cta_handle,
+                    poetry_mode=force_poetry or None,
                 )
             logger.info(f"   Пост сгенерирован: {len(channel_post)} символов (формат {post_meta['format']})")
+
+            typo = None
+            if force_typo or (not dry_run and TYPO_PROB > 0 and random.random() < TYPO_PROB):
+                typo = _with_typo(channel_post, post_meta)
+                if typo:
+                    logger.info(f"✏️ [Publisher] Опечатка: «{typo[1]['word']}» → «{typo[1]['typo']}» ({typo[1]['kind']})")
 
             if dry_run:
                 print("\n" + "=" * 70 + "\n[DRY RUN] Пост НЕ опубликован. HTML для Telegram:\n" + "=" * 70)
                 print(channel_post)
                 print("=" * 70 + f"\nМета: {post_meta}\n")
+                if typo:
+                    print(f"[DRY RUN] С опечаткой «{typo[1]['word']}» → «{typo[1]['typo']}» пост ушёл бы так, "
+                          f"а через {TYPO_FIX_MINUTES[0]}-{TYPO_FIX_MINUTES[1]} мин был бы исправлен:\n{typo[0]}\n")
                 return
 
             # === ШАГ 6: Публикация в канал ===
             logger.info(f"📤 [Publisher] Публикация в {CHANNEL_ID}...")
             sent_message = await bot.send_message(
                 CHANNEL_ID,
-                channel_post,
+                typo[0] if typo else channel_post,
                 parse_mode="HTML",
                 link_preview_options=LinkPreviewOptions(is_disabled=True),
             )
@@ -175,12 +220,15 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
                 "followup_at": followup_at.isoformat() if followup_at else None,
                 "followup_done": False,
             })
+            if typo:
+                # Правильный HTML в истории: если правка отсюда не пройдёт, её повторит followup_cron
+                post_meta["typo"] = {**typo[1], "fixed": False, "fix_html": channel_post}
             if followup_at:
                 logger.info(f"⏰ [Publisher] Запланирована добивка на {followup_at.isoformat()}")
             if personal:
                 columnist.journal_add("personal", post_meta["text"])
 
-            # === ШАГ 7: История постов и флаг published — в свежую копию файла под блокировкой ===
+            # === ШАГ 7: История постов и флаг published - в свежую копию файла под блокировкой ===
             def record(data: dict):
                 data["post_history"] = append_history(data.get("post_history", []), post_meta)
                 current = data.get("current_digest", {})
@@ -194,6 +242,10 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
             except Exception as e:
                 logger.error(f"❌ [Publisher] Не удалось сохранить tg_news.json: {e}")
                 logger.warning("⚠️ При следующем запуске возможен повторный пост!")
+
+            # === ШАГ 8: Автор замечает опечатку и правит пост ===
+            if typo:
+                await _fix_typo(bot, news_path, sent_message.message_id, channel_post)
 
         except Exception as e:
             logger.error(f"❌ [Publisher] Критическая ошибка при публикации: {e}")
@@ -218,6 +270,9 @@ if __name__ == "__main__":
     parser.add_argument("--format", dest="force_format", help="принудительный формат поста (id из POST_FORMATS), для тестов")
     parser.add_argument("--personal", action="store_true", help="личная заметка вместо поста по новости")
     parser.add_argument("--no-jitter", action="store_true", help="публиковать сразу, без случайной паузы")
+    parser.add_argument("--typo", action="store_true", help="опечатка обязательно (с --dry-run: показать пост с ней)")
+    parser.add_argument("--poetry", action="store_true", help="цитата из стихов обязательно (нужен банк цитат)")
     args = parser.parse_args()
     asyncio.run(run_publisher(dry_run=args.dry_run, force_format=args.force_format,
-                              force_personal=args.personal, no_jitter=args.no_jitter))
+                              force_personal=args.personal, no_jitter=args.no_jitter,
+                              force_typo=args.typo, force_poetry=args.poetry))
