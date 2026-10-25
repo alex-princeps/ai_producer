@@ -226,7 +226,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
             if followup_at:
                 logger.info(f"⏰ [Publisher] Запланирована добивка на {followup_at.isoformat()}")
             if personal:
-                columnist.journal_add("personal", post_meta["text"])
+                columnist.journal_add("personal", post_meta["text"], topic=post_meta.get("topic"))
 
             # === ШАГ 7: История постов и флаг published - в свежую копию файла под блокировкой ===
             def record(data: dict):

@@ -190,6 +190,41 @@ def load_recent_digests(n: int = 6) -> list[dict]:
     return data.get("digests_history", [])[-n:]
 
 
+# Реклама, анонсы курсов и мероприятий: 6 из 30 постов комментировали их как новости (аудит 25.10)
+AD_RE = re.compile(
+    r"ранн\w+ цен|\bпоток\w*\b|регистрац|промокод|\berid\b|#реклама|на правах рекламы|вебинар|"
+    r"интенсив|мастер-класс|запис\w+ на курс|курс\w*\s+[«\"]|скидк\w* до|осталось \w+ мест",
+    re.IGNORECASE,
+)
+
+
+def drop_ads(candidates: list[dict]) -> list[dict]:
+    kept = [p for p in candidates if not AD_RE.search(p["text"])]
+    if len(kept) < len(candidates):
+        print(f"📢 Отсеяно рекламы и анонсов: {len(candidates) - len(kept)}")
+    return kept
+
+
+def match_chosen(candidates: list[dict], idx: int, first_words: str) -> int:
+    """
+    Индекс поста, который модель действительно выбрала. Пересказ однажды описывал не тот пост, что по номеру,
+    и цитата под постом расходилась с текстом. Проверяем по первым словам, при расхождении ищем по ним.
+    """
+    def norm(t):
+        return re.sub(r"[^\w]+", " ", (t or "").lower()).strip()
+    probe = " ".join(norm(first_words).split()[:6])
+    if not probe:
+        return idx
+    if 0 <= idx < len(candidates) and probe in norm(candidates[idx]["text"]):
+        return idx
+    for i, c in enumerate(candidates):
+        if probe in norm(c["text"]):
+            print(f"🔀 Номер поста не совпал с выбранным текстом: беру #{i} вместо #{idx}")
+            return i
+    print("⚠️ Выбранный текст не найден среди кандидатов: слот пропускаем.")
+    return -1
+
+
 def drop_overused_ai(candidates: list[dict], recent: list[dict]) -> list[dict]:
     """Если ИИ уже был темой AI_MAX_IN_RECENT раз подряд по окну, новости про ИИ в этот раз не рассматриваются."""
     cap, window = AI_MAX_IN_RECENT
@@ -243,7 +278,10 @@ def filter_top_news(all_posts: list):
         return None
 
     recent = load_recent_digests()
-    candidates = drop_overused_ai(candidates, recent)
+    candidates = drop_overused_ai(drop_ads(candidates), recent)
+    if not candidates:
+        print("🤷‍♂️ После фильтров подходящих постов нет.")
+        return None
     recent_block = "\n".join(f"- [{d.get('channel')}] {(d.get('content') or '')[:160]}" for d in recent) or "- (пока нет)"
 
     print(f"🧠 Выбор top-новости через Gemini Flash-Lite из {len(candidates)} постов...")
@@ -275,12 +313,14 @@ def filter_top_news(all_posts: list):
 Не бери ту же тему, тот же объект или тот же сюжет. Канал должен быть разнообразным: чередуй телевидение,
 кино и стриминги, звёзд и шоу-бизнес, глянец и моду, блогеров, рекламу и маркетинг, бизнес-кейсы.
 Если есть равноценная новость из другого канала-источника, чем у двух последних тем, бери её.
+Не выбирай рекламу, анонсы курсов, конференций и мероприятий, подборки советов и тексты без события:
+нужно, чтобы что-то случилось.
 
 Лента новостей (у каждого поста номер #N):
 {combined_text}
 
 Верни JSON строго такого вида:
-{{"index": <номер выбранного поста или -1>, "summary": "<суть новости в 2-3 предложениях, без ссылок>"}}
+{{"index": <номер выбранного поста или -1>, "first_words": "<первые 8 слов выбранного поста дословно>", "summary": "<суть новости в 2-3 предложениях, без ссылок, только по этому посту>"}}
 """
 
     try:
@@ -291,6 +331,8 @@ def filter_top_news(all_posts: list):
         )
         choice = json.loads(response.text)
         idx = int(choice.get("index", -1))
+        if 0 <= idx < len(candidates):
+            idx = match_chosen(candidates, idx, choice.get("first_words", ""))
         if not 0 <= idx < len(candidates):
             # -1 или неверный номер: в этот слот поста не будет (первый попавшийся пост мог оказаться запретной темой)
             print(f"🤷‍♂️ Подходящей новости нет (index={idx}). Слот пропускаем.")

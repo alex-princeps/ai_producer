@@ -33,9 +33,15 @@ def humanize_punctuation(text: str, rng: random.Random | None = None) -> str:
     text = _DASH_BEFORE_ETO.sub(" - ", text)
     used_eq = [False]
 
-    def pick(_m):
+    def pick(m):
         # «=» не больше одного раза на текст: четыре «=» в одном посте выглядят как сбой
         style = rng.choices(styles, weights=weights, k=1)[0]
+        if style == ": ":
+            # Второе двоеточие в одном предложении («формата: сводится к одному:») читается как сбой
+            left = re.split(r"[.!?…\n]", m.string[:m.start()])[-1]
+            right = re.split(r"[.!?…\n]", m.string[m.end():])[0]
+            if ":" in left or ":" in right:
+                return " - "
         if style == " = ":
             if used_eq[0]:
                 return " - "

@@ -212,12 +212,14 @@ class RAGService:
             
         logger.info(f"✅ RAG база обновлена. Всего чанков: {self.collection.count()}")
 
-    async def search(self, query: str, top_k=5) -> str:
+    async def search(self, query: str, top_k=5, enhance: bool = True) -> str:
         if self.collection.count() == 0: return ""
         
         # [FIX] Рерайт запроса для RAG
         # Добавляем ключевые слова для лучшего поиска векторов
-        enhanced_query = f"{query} телевизионный проект шоу продюсирование форматы"
+        # Для бота запрос дополняется ТВ-лексикой; канал зовёт без неё (enhance=False), иначе любая новость
+        # читалась через «телевизионный проект шоу» (аудит постов 25.10)
+        enhanced_query = f"{query} телевизионный проект шоу продюсирование форматы" if enhance else query
         query_vec = await self._get_embedding(enhanced_query)
         
         if not query_vec: return ""
