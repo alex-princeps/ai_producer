@@ -10,7 +10,10 @@ import random
 import re
 
 # Как заменяется тире между словами (« — »): дефис чаще всего, иногда «=» или двоеточие
-DASH_STYLES = ((" - ", 0.7), (" = ", 0.15), (": ", 0.15))
+# «=» и «:» реже: «фастфуд = это конвейер» читается как сбой (аудит постов 25.10)
+DASH_STYLES = ((" - ", 0.8), (" = ", 0.1), (": ", 0.1))
+# Перед «это» только дефис: «X - это Y», а не «X = это Y» или «X: это Y»
+_DASH_BEFORE_ETO = re.compile("[ \u00a0]+[\u2014\u2013\u2012\u2015][ \u00a0]+(?=это\\b)", re.IGNORECASE)
 
 # Длинное (—), среднее (–), цифровое (‒) тире и горизонтальная черта (―)
 _SPACED_DASH = re.compile(r"[  ]+[—–‒―][  ]+")
@@ -27,6 +30,18 @@ def humanize_punctuation(text: str, rng: random.Random | None = None) -> str:
     styles, weights = zip(*DASH_STYLES)
 
     text = _LINE_START_DASH.sub(lambda m: f"{m.group(1)}- ", text)
-    text = _SPACED_DASH.sub(lambda m: rng.choices(styles, weights=weights, k=1)[0], text)
+    text = _DASH_BEFORE_ETO.sub(" - ", text)
+    used_eq = [False]
+
+    def pick(_m):
+        # «=» не больше одного раза на текст: четыре «=» в одном посте выглядят как сбой
+        style = rng.choices(styles, weights=weights, k=1)[0]
+        if style == " = ":
+            if used_eq[0]:
+                return " - "
+            used_eq[0] = True
+        return style
+
+    text = _SPACED_DASH.sub(pick, text)
     text = _NUM_RANGE.sub("-", text)
     return _ANY_DASH.sub("-", text)

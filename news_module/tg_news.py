@@ -162,13 +162,42 @@ BLOCKED_TOPICS = re.compile(
     r"|\bоппозиц|\bмитинг|\bукраин|\bнато\b|\bтрамп(?:а|у|ом|е)?\b|\bзеленск"
     r"|\bцерк(?:овь|ви|овн)|\bпатриарх|\bрпц\b|\bсвященник|\bбатюшк|\bмечет|\bислам|\bправослав|\bрелиги"
     r"|\bребён|\bребен|\bдет(?:и|ей|ям|ьми|ях)\b|\bдетск|\bподрост|\bнесовершеннолет|\bшкольни|\bмладен"
-    r"|\bлгбт|\bге(?:й|и|ев|ям|ями|ях|йск\w*)\b|\bлесби|\bтрансгендер|\bоднопол|\bквир",
+    r"|\bлгбт|\bге(?:й|и|ев|ям|ями|ях|йск\w*)\b|\bлесби|\bтрансгендер|\bоднопол|\bквир"
+    r"|секс-игрушк|секс-шоп|вибратор|интим-товар|\bэротик|\bпорн",
     re.IGNORECASE,
 )
 
 
 def is_blocked_topic(text: str) -> bool:
     return bool(BLOCKED_TOPICS.search(text or ""))
+
+
+# Тема ИИ съела канал: в аудите 25.10 треть постов была про нейросети. Если среди последних тем
+# ИИ уже был дважды, новости про ИИ в этот раз не рассматриваются вовсе.
+AI_TOPIC_RE = re.compile(r"\bии\b|нейросет|искусственн\w* интеллект|\bai\b|chatgpt|openai|gemini|алгоритм\w* ии|ии-", re.IGNORECASE)
+AI_MAX_IN_RECENT = (2, 4)  # не больше двух из последних четырёх тем
+
+
+def load_recent_digests(n: int = 6) -> list[dict]:
+    """Последние выбранные новости (темы, которые уже комментировались), новые в конце."""
+    if not os.path.exists(JSON_FILENAME):
+        return []
+    try:
+        with open(JSON_FILENAME, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    return data.get("digests_history", [])[-n:]
+
+
+def drop_overused_ai(candidates: list[dict], recent: list[dict]) -> list[dict]:
+    """Если ИИ уже был темой AI_MAX_IN_RECENT раз подряд по окну, новости про ИИ в этот раз не рассматриваются."""
+    cap, window = AI_MAX_IN_RECENT
+    if sum(1 for d in recent[-window:] if AI_TOPIC_RE.search(d.get("content", ""))) < cap:
+        return candidates
+    no_ai = [p for p in candidates if not AI_TOPIC_RE.search(p["text"])]
+    print(f"🔁 ИИ уже был {cap} раза в последних {window} темах: отсеяно новостей про ИИ {len(candidates) - len(no_ai)}")
+    return no_ai or candidates
 
 
 def load_published_urls() -> set:
@@ -213,6 +242,10 @@ def filter_top_news(all_posts: list):
         print("🤷‍♂️ После фильтра тем подходящих постов нет.")
         return None
 
+    recent = load_recent_digests()
+    candidates = drop_overused_ai(candidates, recent)
+    recent_block = "\n".join(f"- [{d.get('channel')}] {(d.get('content') or '')[:160]}" for d in recent) or "- (пока нет)"
+
     print(f"🧠 Выбор top-новости через Gemini Flash-Lite из {len(candidates)} постов...")
 
     from google import genai as google_genai
@@ -231,11 +264,17 @@ def filter_top_news(all_posts: list):
 
 НИКОГДА не выбирай новости про: политику, государство и власть (президент, правительство, депутаты,
 чиновники, выборы, война, армия, санкции, силовики, запреты и блокировки); религию и церковь;
-детей и подростков; ЛГБТ.
+детей и подростков; ЛГБТ; секс-товары, чужие разводы и интимную жизнь.
 
 Из остальных выбери РОВНО ОДНУ новость про медиа, шоу-бизнес, телевидение, кино, глянец, блогеров,
 рекламу, маркетинг или бизнес-кейсы, из которой продюсер может сделать практический вывод для своих
 читателей. При прочих равных бери самую обсуждаемую. Если подходящих новостей нет совсем, верни index -1.
+
+Темы, которые продюсер уже комментировал недавно (новые внизу):
+{recent_block}
+Не бери ту же тему, тот же объект или тот же сюжет. Канал должен быть разнообразным: чередуй телевидение,
+кино и стриминги, звёзд и шоу-бизнес, глянец и моду, блогеров, рекламу и маркетинг, бизнес-кейсы.
+Если есть равноценная новость из другого канала-источника, чем у двух последних тем, бери её.
 
 Лента новостей (у каждого поста номер #N):
 {combined_text}

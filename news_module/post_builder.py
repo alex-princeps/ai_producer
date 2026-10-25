@@ -32,16 +32,17 @@ import pytz
 from aristarkh_core.config import logger
 from aristarkh_core.humanize import humanize_punctuation
 from aristarkh_core.prompts import Prompts
-from news_module import columnist, poetry
+from news_module import columnist, poetry, variety
 
 TELEGRAM_LIMIT = 4096
 QUOTE_MAX_CHARS = 500
 HISTORY_SIZE = 10
 
-# Для кого канал: от этого зависят примеры в выводе для читателя
+# Для кого канал: от этого зависят примеры в выводе для читателя.
+# Типы бизнеса здесь не перечисляем: модель вставляла «салон, юрфирма, стройка» почти в каждый финал (аудит 25.10).
 AUDIENCE = (
-    "авторы Telegram-каналов и начинающие блогеры, копирайтеры и маркетологи, "
-    "владельцы небольших продакшенов и малого бизнеса (салоны красоты, юридические фирмы, небольшие стройки)"
+    "авторы Telegram-каналов и блогеры, копирайтеры и маркетологи, эксперты со своим делом, "
+    "владельцы небольших продакшенов и малого бизнеса"
 )
 
 # Форматы поста: инструкция, диапазон длины (символы), можно ли опираться на байку из базы, вес
@@ -67,7 +68,7 @@ POST_FORMATS = [
     {
         "id": "story",
         "name": "Байка к месту",
-        "instruction": "Одна история из профессиональной базы знаний, которая неожиданно объясняет новость. История - чужая: рассказывай её как услышанную от коллеги, никогда от первого лица. Затем короткий вывод.",
+        "instruction": "Одна история из профессиональной базы знаний, которая неожиданно объясняет новость. Рассказывай её в третьем лице как известный в индустрии случай: без себя в кадре, без «мне рассказывали», «на днях», «пока мы смотрели». Затем короткий вывод.",
         "length": (800, 1500), "story": True, "weight": 2,
     },
     {
@@ -97,7 +98,7 @@ POST_FORMATS = [
     {
         "id": "memory",
         "name": "Отзвук",
-        "instruction": "Как эта новость отозвалась лично в тебе: ассоциация, настроение, воспоминание из твоей жизни (только из того, что ты можешь рассказывать о себе) - без имён реальных людей и без выдуманных встреч с ними.",
+        "instruction": "Как эта новость отозвалась лично в тебе: эпизод из профессии, города, книг или вещей (только из того, что ты можешь рассказывать о себе). Не урок истории и не семья. Без имён реальных людей и без выдуманных встреч с ними.",
         "length": (500, 1100), "story": False, "weight": 1,
     },
 ]
@@ -117,6 +118,9 @@ BANNED_PHRASES = [
     "вызывает у меня лишь", "брезгливое разочарование",
     # обороты, по которым читатель узнаёт текст нейросети
     "давайте разбер", "давайте посмотрим", "важно понимать", "стоит отметить", "в заключение", "подводя итог",
+    # штампы, которые аудит 25.10 нашёл по кругу
+    "чистый версаль", "прямо как при дворе", "как в версале", "вспомните двор", "как известно",
+    "лермонтов это знал", "как у есенина", "упаковку вечного", "окурком на чужом столе", "самое смешное, что",
 ]
 MAX_DILETANT = 1  # слово-маркер допустимо не больше одного раза за пост
 
@@ -145,19 +149,52 @@ MILITARY_RE = re.compile(
     r"|\bдиверси(?:я|и|ю|ей|ями|ях)\b|\bдиверсант|рекогносциров|\bредут|блицкриг|\bдесант|\bтранше(?:я|и|ю|е|ями|ях)\b"
     r"|\bканонад|\bшрапнел|\bарьергард|\bгенерал(?:ы|а|у|ом|ов|ам|ами|ах)?\b|\bмаршал(?:а|у|ом|ы|ов)?\b|\bполк(?:ом|ов)?\b|\bв\s+бой\b"
     r"|\bоборон(?:а|у|е|ой|ы)\b|\bбоев(?:ой|ая|ое|ые|ых)\s+(?:дух|задач|готовност)"
-    r"|\bарми[яиюей]\s+(?:фанат|подписчик|поклонник|хейтер|бот)|\bпушечн|\bкавалери|\bпехот",
+    r"|\bарми[яиюей]\s+(?:фанат|подписчик|поклонник|хейтер|бот)|\bпушечн|\bкавалери|\bпехот|зачистк|\bброн(?:я|ю|ей)\b",
     re.IGNORECASE,
 )
 # Без «Бородин»: это и Ксения Бородина из шоубиз-новостей. Тексты о хобби и так называют солдатиков или диораму.
 HOBBY_RE = re.compile(r"солдатик|диорам|кирасир|гусар|наполеоник", re.IGNORECASE)
-MILITARY_FIX = (
-    "военные метафоры и армейские образы ({found}): замени их исторической аллюзией (Рим, Версаль, двор Екатерины, "
-    "девятнадцатый век), театральным или бытовым образом, а лучше прямой мыслью"
-)
+# Без готового списка замен: прежний «бери Рим, Версаль, двор Екатерины, девятнадцатый век» модель
+# воспроизводила почти в каждом посте (аудит 25.10: исторические параллели в 24 постах из 31)
+MILITARY_FIX = "военные метафоры и армейские образы ({found}): скажи это прямой мыслью или точным бытовым образом"
 MILITARY_RULE = (
     "Никаких военных метафор и армейских образов: фланги, окопы, знамёна, амбразуры, гранаты, штабы, "
-    "«отступление к Можайску». Нужна параллель - бери историческую (Рим, Версаль, двор Екатерины, девятнадцатый век), "
-    "театральную или бытовую. Исключение: если речь о твоих солдатиках и диораме, наполеоника и 1812 год к месту."
+    "«отступление к Можайску». Исключение: если речь о твоих солдатиках и диораме, наполеоника и 1812 год к месту."
+)
+# История - его любовь, но в постах она редкая и точная (правило Алекса, 25.10)
+HISTORY_RULE = (
+    "Исторические параллели и придворные образы (Версаль, двор Екатерины, Рим, гладиаторы, девятнадцатый век) - "
+    "только если сама новость рифмуется с конкретным историческим эпизодом, который ты знаешь лучше других. "
+    "Одна точная деталь, а не дежурное «как при дворе». В большинстве постов истории нет совсем."
+)
+# История допустима только там, где ей есть место, и только если сама новость даёт историческую рифму
+HISTORY_FORMATS = {"producer_fix", "twist", "story", "against"}
+HISTORY_HOOK_RE = re.compile(
+    r"истори\w*|музе|реставрац|архив|юбиле|династи|император|наследи|\bвек[аеу]?\b|столети|ретро|винтаж|эпох|"
+    r"революц|царск|советск|ссср|девяност|восьмидесят|семидесят",
+    re.IGNORECASE,
+)
+
+
+def history_allowed(fmt_id: str, news: dict) -> bool:
+    text = f"{news.get('content', '')} {news.get('original_text', '')}"
+    return fmt_id in HISTORY_FORMATS and bool(HISTORY_HOOK_RE.search(text))
+
+
+ONE_DEVICE_RULE = (
+    "Один приём сравнения на пост: либо твой телевизионный опыт, либо историческая параллель, либо классик, "
+    "либо стихи. Не всё сразу."
+)
+
+# Живой человек не объявляет свои эмоции, они слышны в тексте
+EMOTION_RULE = (
+    "Тон должен слышаться, а не называться: не пиши «испытываю брезгливость», «чувствую тоску», «накрывает тревога», "
+    "«почти физическое удовольствие»."
+)
+STYLE_RULE = (
+    "Не цитируй своё КРЕДО дословно: это убеждения, а не готовые фразы. ТВ-жаргон (прайм, перебивка, аппаратная, "
+    "хронометраж, летучка) и любимые словечки (разводка, нерв, упаковка, вылизанный) - одно-два на пост, не больше. "
+    "Не перечисляй типы бизнеса («салон, юрфирма, стройка»): если нужен пример читателя, возьми одного и конкретного."
 )
 
 URL_RE = re.compile(r"https?://\S+")
@@ -197,25 +234,31 @@ def find_contact_claims(text: str) -> list[str]:
     return [m.group(0) for m in CONTACT_CLAIMS.finditer(text)]
 
 
-def find_military(text: str) -> list[str]:
-    """Военные метафоры в тексте. Текст о солдатиках и диораме не проверяется: там это история и хобби."""
-    if HOBBY_RE.search(text or ""):
+def find_military(text: str, allow_hobby: bool = False) -> list[str]:
+    """
+    Военные метафоры в тексте. Исключение для солдатиков и диорамы действует только в личной заметке:
+    в посте по новости одна фраза про оловянных французов открывала бы дорогу целой цепочке армейских образов.
+    """
+    if allow_hobby and HOBBY_RE.search(text or ""):
         return []
     return sorted({m.group(0).lower() for m in MILITARY_RE.finditer(text or "")})
 
 
 HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые задают вопрос подписчикам
-DAY_MENTION_PROBABILITY = 0.3  # в скольких постах можно мимоходом упомянуть свой день или погоду
+DAY_MENTION_PROBABILITY = 0.12  # в скольких постах можно мимоходом упомянуть свой день или погоду (было 0.3: «у окна» через пост)
 CALLBACK_PROBABILITY = 0.15    # в скольких постах можно сослаться на свой недавний пост
 PERSONAL_HOOK_PROBABILITY = 0.3  # личная заметка заканчивается вопросом к читателям
 
 # Вывод для читателя в конце поста: своими словами, без рубрик-меток (канал - голос живого автора)
 TAKEAWAY_RULE = (
-    "Закончи пост выводом для читателя: одна-две фразы о том, что конкретно он может сделать у себя "
-    "(в Telegram-канале, блоге, салоне, юрфирме, небольшой стройке или маленьком продакшене) с этим уроком. "
-    "Формулируй каждый раз по-новому и своим голосом, как продолжение мысли, без рубрик и меток "
-    "вроде «Что забрать себе:», «Вывод:», «Мораль:», «Итог:». Действие, а не мораль."
+    "Закончи пост выводом для читателя: что конкретно он может сделать у себя с этим уроком. "
+    "Своим голосом, как продолжение мысли, без рубрик и меток вроде «Что забрать себе:», «Вывод:», «Мораль:», «Итог:». "
+    "Действие, а не мораль."
 )
+
+
+def takeaway_rule(style: str | None) -> str:
+    return TAKEAWAY_RULE + (f" Форма вывода в этом посте: {style}." if style else "")
 RUBRIC_RE = re.compile(r"(?mi)^[ \t]*(?:что забрать себе|продюсерский вывод|выводы?|мораль|итог|резюме)[ \t]*:[ \t]*(\w?)")
 RUBRIC_FIX = "рубрика-метка в начале абзаца («Что забрать себе:», «Вывод:» и т.п.): перепиши этот вывод живой фразой без метки"
 
@@ -271,6 +314,7 @@ def clean_quote(text: str) -> str:
 def build_system_prompt(
     fmt: dict, tone: str, core_beliefs: list, rag_context: str, recent_openings: list[str], hook: bool = False,
     persona: str | None = None, day_block: str = "", recent_block: str = "", poetry_block: str = "",
+    variety_block: str = "", takeaway_style: str | None = None,
 ) -> str:
     beliefs_text = "\n".join(f"- {b}" for b in core_beliefs) if core_beliefs else "- нет"
     openings = "\n".join(f"- «{o}»" for o in recent_openings) if recent_openings else "- (постов ещё не было)"
@@ -281,8 +325,8 @@ def build_system_prompt(
             f"{rag_context}\n\n"
             "Правила: возьми из базы максимум ОДНУ историю, которая действительно подходит. "
             "Истории от первого лица в базе - это ЧУЖОЙ опыт: никогда не пересказывай их как свои. "
-            "Подавай историю каждый раз по-разному (например: «коллега с одного канала рассказывал», "
-            "«на одной летучке мне рассказали», «есть известный случай»), не повторяй одну и ту же вводную."
+            "Рассказывай её в третьем лице, как известный случай, без себя в кадре и без «мне рассказывали», "
+            "«на днях один знакомый», «пока мы смотрели в аппаратной». Каждый раз входи в историю по-новому."
         )
     elif rag_context:
         knowledge = (
@@ -320,6 +364,8 @@ def build_system_prompt(
 
 {recent_block}
 
+{variety_block}
+
 ФОРМАТ ЭТОГО ПОСТА: «{fmt['name']}». {fmt['instruction']}
 ДЛИНА: {lo}-{hi} символов без финального вывода для читателя. Это жёсткое требование: не длиннее.
 ТОН ЭТОГО ПОСТА: {tone}. Если этот тон совсем не ложится на новость, выбери ближайший уместный.
@@ -332,7 +378,8 @@ def build_system_prompt(
 
 КАК ПИСАТЬ:
 1. Это живой пост живого человека, а не колонка по шаблону. Каждый пост строится по-своему.
-2. Начни сразу с мысли. Не начинай пост так же, как последние посты:
+2. Начни сразу с мысли о новости, а не с того, что ты делаешь («читаю», «смотрю», «стою у окна», «варю кофе»).
+   Не начинай пост так же, как последние посты:
 {openings}
 3. Запрещённые обороты (они превратили прошлые посты в копии друг друга): {banned}.
 4. Слово «дилетант» - максимум один раз, лучше ни разу.
@@ -342,9 +389,14 @@ def build_system_prompt(
 8. Никаких обращений к конкретному собеседнику и личной переписки. О своём дне и погоде - только если это разрешено в блоке «ТВОЙ ДЕНЬ», мимоходом.
 9. Без заголовков, без списков, без markdown и звёздочек. Обычный текст, абзацы по смыслу.
 10. Не пиши «Цитата», не повторяй текст новости - он будет показан над постом отдельно.
-11. {TAKEAWAY_RULE}
+11. {takeaway_rule(takeaway_style)}
 {hook_rule}{voice_rule}14. {MILITARY_RULE}
 15. {verse_rule}
+16. {HISTORY_RULE}
+17. {EMOTION_RULE}
+18. {STYLE_RULE}
+19. Никакой семьи и здоровья: ни мамы, ни жён, ни детей и внуков, ни болезни, таблеток и врачей. Это публичный канал.
+20. {ONE_DEVICE_RULE}
 """
 
 
@@ -437,7 +489,8 @@ def _drop_rubrics(text: str) -> str:
     return RUBRIC_RE.sub(lambda m: m.group(1).upper(), text)
 
 
-async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_problems: list[str] | None = None) -> str:
+async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_problems: list[str] | None = None,
+                  banned: list[str] | None = None, allow_hobby: bool = False) -> str:
     """
     Проверки после генерации: клише, выдуманные знакомства с реальными людьми, рубрики-метки вроде «Вывод:».
     Если что-то не так - один проход переписывания. Выдуманное знакомство, пережившее переписывание,
@@ -448,9 +501,10 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
         problems.append(CONTACT_FIX)
     if RUBRIC_RE.search(text):
         problems.append(RUBRIC_FIX)
-    military = find_military(text)
+    military = find_military(text, allow_hobby)
     if military:
         problems.append(MILITARY_FIX.format(found=", ".join(military)))
+    problems += variety.violations(text, banned or [])
     if problems:
         logger.info(f"♻️ [Post] Переписываем: {problems}")
         rewrite_prompt = (
@@ -465,13 +519,19 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
         left = find_cliches(text)
         if left:
             logger.warning(f"⚠️ [Post] После переписывания остались клише: {left}")
-        left = find_military(text)
+        left = find_military(text, allow_hobby)
         if left:
             logger.warning(f"⚠️ [Post] После переписывания остались военные метафоры: {left}")
+        left = [p for p in variety.violations(text, banned or []) if p != variety.PRIVATE_FIX]
+        if left:
+            logger.warning(f"⚠️ [Post] После переписывания остались повторы: {left}")
     claims = find_contact_claims(text)
     if claims:
         # Выдуманное знакомство с реальным человеком не публикуем: лучше пропустить слот
         raise ValueError(f"После переписывания осталось выдуманное знакомство: {claims}")
+    if variety.has_private(text):
+        # Семья и здоровье в публичном канале: такой пост лучше не публиковать вовсе
+        raise ValueError("После переписывания в тексте осталось личное (семья или здоровье)")
     # Тире внутри строк стиха - дефисом и до общей постобработки: она поставила бы туда «=» или «:»
     return humanize_punctuation(_drop_rubrics(poetry.verse_dashes(text, poetry.load_bank())))
 
@@ -536,12 +596,18 @@ async def generate_post(
         tone = choose_tone(last_tone)
 
     hook = COMMENTS_OPEN and fmt["id"] != "question" and random.random() < HOOK_PROBABILITY
+    banned = variety.banned_motifs(history)
+    if not history_allowed(fmt["id"], news) or candidates:
+        banned = list(dict.fromkeys(banned + ["history"]))  # без исторической рифмы в новости истории нет совсем
+    style_id, style = variety.pick_takeaway_style(history, random)
     system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook,
                                         persona=persona, day_block=day_block, recent_block=recent_block,
-                                        poetry_block=poetry.prompt_block(candidates) if candidates else "")
+                                        poetry_block=poetry.prompt_block(candidates) if candidates else "",
+                                        variety_block=variety.prompt_block(banned), takeaway_style=style)
     user_prompt = build_user_prompt(news)
     logger.info(f"✍️ [Post] Формат: {fmt['name']}, тон: {tone}, настроение: {day['mood'] if day else '-'}, "
-                f"база знаний: {'да' if rag_ctx else 'нет'}, стихи: {'да' if candidates else 'нет'}")
+                f"база знаний: {'да' if rag_ctx else 'нет'}, стихи: {'да' if candidates else 'нет'}, "
+                f"вывод: {style_id}, запреты: {banned}")
 
     comment = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(comment)
@@ -552,7 +618,7 @@ async def generate_post(
             extra.append(f"сроки в прошлом ({', '.join(map(str, years))}): сегодня {today_ru()}, прогноз должен быть в будущем")
     if not _verse_status(comment, candidates, bank)[0]:
         extra.append(poetry.MISQUOTE_FIX)
-    comment = await _polish(llm, system_prompt, user_prompt, comment, extra)
+    comment = await _polish(llm, system_prompt, user_prompt, comment, extra, banned)
     verse_ok, verse = _verse_status(comment, candidates, bank)
     if not verse_ok:
         if poetry_mode is False:
@@ -563,7 +629,8 @@ async def generate_post(
     cta = bool(cta_handle) and needs_cta(history)
     meta = {
         "format": fmt["id"], "tone": tone, "mood": day["mood"] if day else None, "hook": hook, "cta": cta,
-        "poetry": _poetry_meta(verse), "opening": _opening(comment), "chars": len(comment), "text": comment,
+        "poetry": _poetry_meta(verse), "takeaway_style": style_id,
+        "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
     return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta
 
@@ -585,6 +652,7 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
     poetry_block = poetry.prompt_block(candidates).replace("[СТИХИ В ЭТОМ ПОСТЕ]", "[СТИХИ В ЭТОЙ ЗАМЕТКЕ]") \
         if candidates else ""
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
+    motifs = variety.banned_motifs(history)
     system_prompt = f"""
 {persona}
 
@@ -599,14 +667,16 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
 
 {columnist.recent_posts_block(history, False)}
 
+{variety.prompt_block(motifs)}
+
 {poetry_block}
 
 КАК ПИСАТЬ:
 1. 350-800 символов. Один момент, одна мысль. Без морали в конце и без рубрик-меток.
    Не начинай с кофе и погоды: войди в заметку через сам момент или мысль.
 2. Тема одна, на выбор: работа над чужим проектом в общих чертах, книга или фильм, которые перечитываешь
-   или пересматриваешь, солдатики и диорама, город и погода, Петербург, профессия и время, возраст
-   и самоирония, путешествия. Бери только то, что есть в «ЧТО Я МОГУ РАССКАЗЫВАТЬ О СЕБЕ», и мелкие бытовые детали дня.
+   или пересматриваешь, солдатики и диорама, город, Петербург, профессия и время, самоирония,
+   путешествия. Бери только то, что есть в «ЧТО Я МОГУ РАССКАЗЫВАТЬ О СЕБЕ», и мелкие бытовые детали дня.
 3. Не касайся того, что в блоке «ЧЕГО Я В КАНАЛЕ НЕ КАСАЮСЬ НИКОГДА». Не выдумывай встреч, разговоров
    и совместной работы с реальными людьми.
 4. Тон: {tone}. Настроение дня: {day['mood']}.
@@ -615,12 +685,15 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
 7. Запрещённые обороты: {banned}.
 8. {MILITARY_RULE}
 9. {verse_rule}
+10. {HISTORY_RULE}
+11. {EMOTION_RULE}
+12. Никакой семьи и здоровья: ни мамы, ни жён, ни детей и внуков, ни болезни, таблеток и врачей. Это публичный канал.
 """
     user_prompt = "Напиши личную заметку для канала."
     text = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(text)
     extra = [] if _verse_status(text, candidates, bank)[0] else [poetry.MISQUOTE_FIX]
-    text = await _polish(llm, system_prompt, user_prompt, text, extra)
+    text = await _polish(llm, system_prompt, user_prompt, text, extra, motifs, allow_hobby=True)
     verse_ok, verse = _verse_status(text, candidates, bank)
     if not verse_ok:
         if poetry_mode is False:
@@ -668,6 +741,9 @@ async def generate_razbor(
 8. Не пересказывай вопрос: он будет показан над ответом.
 9. {MILITARY_RULE}
 10. {poetry.NO_VERSE_RULE}
+11. {HISTORY_RULE} {EMOTION_RULE}
+12. {STYLE_RULE}
+13. Никакой семьи и здоровья: ни мамы, ни жён, ни детей и внуков, ни болезни, таблеток и врачей.
 """
     user_prompt = f"ВОПРОС ПОДПИСЧИКА:\n{question.strip()}"
     answer = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
@@ -722,9 +798,12 @@ def _ago_ru(minutes: int) -> str:
     return "день"
 
 
-async def generate_followup(llm, post: dict, minutes_since: int) -> str:
-    """Короткая добивка (1-2 предложения) к собственному посту."""
+async def generate_followup(llm, post: dict, minutes_since: int, recent_followups: list[str] | None = None) -> str:
+    """Короткая добивка (1-2 предложения) к собственному посту. recent_followups - тексты прошлых добивок."""
     kind = random.choice(FOLLOWUP_KINDS)
+    # Не повторять словечки своего же поста и начала прошлых добивок («Самое смешное, что...» было трижды)
+    motifs = list(dict.fromkeys(variety.motifs_in(post.get("text", "")) + ["history"]))
+    past = [f"- «{t.split('.')[0][:80]}»" for t in (recent_followups or [])[-4:] if t]
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
     persona = columnist.load_persona()
     mood_line = f"Настроение сейчас: {columnist.get_day()['mood']}.\n" if persona else ""
@@ -739,18 +818,24 @@ async def generate_followup(llm, post: dict, minutes_since: int) -> str:
 Запрещённые обороты: {banned}.
 Без markdown и звёздочек. Мат - только если он точнее любого другого слова.
 {MILITARY_RULE} {poetry.NO_VERSE_RULE}
+Без исторических параллелей. {EMOTION_RULE}
+Никакой семьи и здоровья: ни мамы, ни детей, ни болезни.
+{variety.prompt_block(motifs)}
+{("Не начинай так же, как прошлые добивки:" + chr(10) + chr(10).join(past)) if past else ""}
 """
     user_prompt = f"ТВОЙ ПОСТ:\n{post.get('text', '').strip()}"
     text = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(text)
-    if find_cliches(text) or find_contact_claims(text) or find_military(text):
+    if find_cliches(text) or find_contact_claims(text) or find_military(text) or variety.violations(text, motifs):
         text = (await llm.generate_standalone(
             system_prompt,
             user_prompt + "\n\nЧЕРНОВИК ДОБИВКИ:\n" + text
-            + "\n\nПерепиши без запрещённых оборотов, без военных метафор и без выдуманного личного знакомства "
-              "с реальными людьми.",
+            + "\n\nПерепиши без запрещённых оборотов, без военных метафор, без повторов из своего поста, без семьи и здоровья "
+              "и без выдуманного личного знакомства с реальными людьми.",
         )).replace("*", "").strip()
         _ensure_generated(text)
         if find_contact_claims(text):
             raise ValueError("В добивке осталось выдуманное знакомство с реальным человеком")
+    if variety.has_private(text):
+        raise ValueError("В добивке личное (семья или здоровье)")
     return humanize_punctuation(text)

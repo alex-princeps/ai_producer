@@ -50,6 +50,7 @@ def _update_post(message_id: int, **fields):
     update_json(NEWS_PATH, mutate)
 
 
+QUIET_FROM, QUIET_TO = (2, 30), (10, 0)  # тихие часы по Москве
 TYPO_REPAIR_AFTER_MIN = 40  # публикатор правит опечатку за 2-25 минут; позже - значит, не смог
 
 
@@ -108,6 +109,11 @@ async def run_followup(dry_run: bool = False) -> None:
         except Exception as e:
             logger.error(f"❌ [Followup] Проверка опечаток не удалась: {e}")
     history = read_json(NEWS_PATH).get("post_history", [])
+    # Сова: с 02:30 до 10:00 по Москве он спит, добивка ждёт утра (раньше одна вышла в 05:22)
+    msk = datetime.now(timezone.utc) + timedelta(hours=3)
+    if not dry_run and (msk.hour, msk.minute) >= QUIET_FROM and (msk.hour, msk.minute) < QUIET_TO:
+        logger.info("😴 [Followup] Ночь по Москве: добивки ждут утра.")
+        return
     post = _due_post(history, datetime.now(timezone.utc), dry_run)
     if not post:
         logger.info("⏩ [Followup] Созревших добивок нет.")
@@ -128,7 +134,8 @@ async def run_followup(dry_run: bool = False) -> None:
     async with aiohttp.ClientSession() as session:
         llm = LLMService(config.GOOGLE_API_KEY)
         llm.http_session = session
-        text = await generate_followup(llm, post, minutes_since)
+        recent = [h.get("followup_text") for h in history if h.get("followup_text")]
+        text = await generate_followup(llm, post, minutes_since, recent)
 
     if dry_run:
         print(f"\n[DRY RUN] Добивка к посту {post.get('message_id')} (через {minutes_since} мин):\n{text}\n")
