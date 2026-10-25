@@ -56,14 +56,14 @@ POST_FORMATS = [
     {
         "id": "producer_fix",
         "name": "Разбор продюсера",
-        "instruction": "Как продюсер: что здесь сделано не так и что бы ты сделал на месте героев новости - конкретные ходы, как на летучке.",
-        "length": (800, 1500), "story": False, "weight": 4,
+        "instruction": "Как продюсер: что здесь сделано не так и что бы ты сделал на месте героев новости, конкретными ходами.",
+        "length": (800, 1500), "story": False, "weight": 3,
     },
     {
         "id": "twist",
         "name": "Докрутка",
-        "instruction": "Мысленный эксперимент продюсера: возьми инфоповод (формат, скандал, бизнес-модель, чей-то личный бренд) и докрути его до хита. Что бы ты добавил, убрал, перевернул, чтобы это стало сильнее, дороже, громче? Конкретные ходы, а не общие слова.",
-        "length": (700, 1400), "story": False, "weight": 4,
+        "instruction": "Мысленный эксперимент: что надо добавить, убрать или перевернуть в этом инфоповоде (формат, скандал, бизнес-модель, чей-то личный бренд), чтобы он стал сильнее, дороже, громче. Конкретные ходы, а не общие слова. Не обязательно превращать всё в шоу или реалити.",
+        "length": (700, 1400), "story": False, "weight": 3,
     },
     {
         "id": "story",
@@ -74,7 +74,7 @@ POST_FORMATS = [
     {
         "id": "bet",
         "name": "Ставка",
-        "instruction": "Прогноз: чем это закончится и когда. Конкретно, с цифрой или сроком, как человек, готовый поспорить на деньги.",
+        "instruction": "Прогноз своими словами: чем это закончится и когда. Срок естественный («к лету», «через пару сезонов»), без слов «ставка», «делаю ставку», «ровно через». Никаких прогнозов курса акций, банкротства или увольнений для реальных компаний и людей: прогнозируй тренды, форматы и поведение рынка.",
         "length": (350, 800), "story": False, "weight": 2,
     },
     {
@@ -92,7 +92,7 @@ POST_FORMATS = [
     {
         "id": "numbers",
         "name": "Деньги и цифры",
-        "instruction": "Холодно, почти без эмоций: деньги, аудитория, охваты, кто на этом заработает и сколько. Если точных цифр нет - прикинь порядок и скажи, что это прикидка.",
+        "instruction": "Холодно, почти без эмоций: деньги, аудитория, охваты, кто на этом заработает и сколько. Цифры из новости бери как есть; любая своя цифра только с пометкой, что это прикидка на глаз.",
         "length": (450, 1000), "story": False, "weight": 2,
     },
     {
@@ -101,7 +101,48 @@ POST_FORMATS = [
         "instruction": "Как эта новость отозвалась лично в тебе: эпизод из профессии, города, книг или вещей (только из того, что ты можешь рассказывать о себе). Не урок истории и не семья. Без имён реальных людей и без выдуманных встреч с ними.",
         "length": (500, 1100), "story": False, "weight": 1,
     },
+    {
+        "id": "observation",
+        "name": "Наблюдение",
+        "instruction": "Короткое наблюдение: что тебя зацепило в этой новости и почему, три-шесть предложений. Без разбора «как бы я сделал» и без советов.",
+        "length": (250, 650), "story": False, "weight": 3,
+    },
+    {
+        "id": "doubt",
+        "name": "Сомнение",
+        "instruction": "Честное сомнение: в чём ты не уверен в этой истории, что в ней может оказаться не тем, чем кажется. Без приговора и без морали.",
+        "length": (400, 900), "story": False, "weight": 2,
+    },
 ]
+
+# Манера вместо ярлыка тона: модель переписывала ярлык в текст («испытываю брезгливость», аудит 25.10)
+TONE_MANNER = {
+    "холодная ирония": "сухо, короткими фразами, усмешка между строк, без восклицаний",
+    "азарт": "быстро и с удовольствием от игры, живые глаголы, рубленые фразы",
+    "усталость и скука": "медленно и нехотя, ленивые длинные фразы, без пафоса",
+    "неожиданное уважение": "сдержанно признаёшь чужую работу, ворчливо, но честно",
+    "злорадство": "ехидно и точно, смакуешь одну деталь чужого промаха",
+    "брезгливость": "коротко и холодно, держишь предмет на расстоянии, как пинцетом",
+    "ностальгия": "мягче обычного, одна точная деталь из прошлого, без «раньше было лучше»",
+    "тревога": "отрывисто, с недосказанностью, вопрос к себе без ответа",
+    "весёлое хулиганство": "легко и озорно, с неожиданным поворотом и подначкой",
+}
+# Через что смотреть на новость: раньше почти каждый пост читался через «кухню ТВ» и «фальшь против нерва»
+OPTICS = [
+    ("money", "деньги: кто за это платит и кто на этом заработает"),
+    ("rules", "правила игры: кто их пишет и кто их нарушает"),
+    ("craft", "ремесло: как это сделано и хорошо ли"),
+    ("taste", "вкус: красиво это или пошло"),
+    ("buyer", "покупатель: зачем люди на это ведутся"),
+    ("city", "город и быт: как это выглядит в обычной московской жизни"),
+    ("tv", "кухня телевидения и стримингов"),
+]
+
+
+def pick_optic(history: list[dict], rng=random) -> tuple[str, str]:
+    recent = {h.get("optic") for h in history[-3:]}
+    pool = [o for o in OPTICS if o[0] not in recent] or OPTICS
+    return rng.choice(pool)
 
 TONES = [
     "холодная ирония", "азарт", "усталость и скука", "неожиданное уважение",
@@ -170,8 +211,9 @@ HISTORY_RULE = (
 # История допустима только там, где ей есть место, и только если сама новость даёт историческую рифму
 HISTORY_FORMATS = {"producer_fix", "twist", "story", "against"}
 HISTORY_HOOK_RE = re.compile(
-    r"истори\w*|музе|реставрац|архив|юбиле|династи|император|наследи|\bвек[аеу]?\b|столети|ретро|винтаж|эпох|"
-    r"революц|царск|советск|ссср|девяност|восьмидесят|семидесят",
+    # Без голого «истори»: «история успеха» и «история покупок» открывали Версаль для любой новости
+    r"историческ|историк|реставра|музе|галере|архив|юбиле|династи|император|наследи|\b1[0-8]\d\d\b|"
+    r"\b[XVI]{2,5}\s*век|\bвек(?:а|е|у|ов)?\b|столети|эпох(?:а|и|у|е)\b",
     re.IGNORECASE,
 )
 
@@ -244,6 +286,7 @@ def find_military(text: str, allow_hobby: bool = False) -> list[str]:
     return sorted({m.group(0).lower() for m in MILITARY_RE.finditer(text or "")})
 
 
+RAG_PROB_FIX = 0.3  # доля разборов и мысленных экспериментов, где подтягивается база лекций
 HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые задают вопрос подписчикам
 DAY_MENTION_PROBABILITY = 0.12  # в скольких постах можно мимоходом упомянуть свой день или погоду (было 0.3: «у окна» через пост)
 CALLBACK_PROBABILITY = 0.15    # в скольких постах можно сослаться на свой недавний пост
@@ -257,7 +300,10 @@ TAKEAWAY_RULE = (
 )
 
 
-def takeaway_rule(style: str | None) -> str:
+def takeaway_rule(style: str | None, none: bool = False) -> str:
+    if none:
+        return ("Без отдельного совета читателю в конце: закончи мыслью, деталью или репликой. "
+                "Если вывод напрашивается, пусть он останется между строк.")
     return TAKEAWAY_RULE + (f" Форма вывода в этом посте: {style}." if style else "")
 RUBRIC_RE = re.compile(r"(?mi)^[ \t]*(?:что забрать себе|продюсерский вывод|выводы?|мораль|итог|резюме)[ \t]*:[ \t]*(\w?)")
 RUBRIC_FIX = "рубрика-метка в начале абзаца («Что забрать себе:», «Вывод:» и т.п.): перепиши этот вывод живой фразой без метки"
@@ -314,7 +360,7 @@ def clean_quote(text: str) -> str:
 def build_system_prompt(
     fmt: dict, tone: str, core_beliefs: list, rag_context: str, recent_openings: list[str], hook: bool = False,
     persona: str | None = None, day_block: str = "", recent_block: str = "", poetry_block: str = "",
-    variety_block: str = "", takeaway_style: str | None = None,
+    variety_block: str = "", takeaway_style: str | None = None, no_takeaway: bool = False, optic: str = "",
 ) -> str:
     beliefs_text = "\n".join(f"- {b}" for b in core_beliefs) if core_beliefs else "- нет"
     openings = "\n".join(f"- «{o}»" for o in recent_openings) if recent_openings else "- (постов ещё не было)"
@@ -366,9 +412,10 @@ def build_system_prompt(
 
 {variety_block}
 
-ФОРМАТ ЭТОГО ПОСТА: «{fmt['name']}». {fmt['instruction']}
+ЗАДАЧА ЭТОГО ПОСТА: {fmt['instruction']}
 ДЛИНА: {lo}-{hi} символов без финального вывода для читателя. Это жёсткое требование: не длиннее.
-ТОН ЭТОГО ПОСТА: {tone}. Если этот тон совсем не ложится на новость, выбери ближайший уместный.
+МАНЕРА ЭТОГО ПОСТА: {TONE_MANNER.get(tone, tone)}. Само чувство словами не называй.
+{("ОПТИКА ЭТОГО ПОСТА: смотри на новость прежде всего через это: " + optic + ".") if optic else ""}
 
 {views}
 
@@ -389,7 +436,7 @@ def build_system_prompt(
 8. Никаких обращений к конкретному собеседнику и личной переписки. О своём дне и погоде - только если это разрешено в блоке «ТВОЙ ДЕНЬ», мимоходом.
 9. Без заголовков, без списков, без markdown и звёздочек. Обычный текст, абзацы по смыслу.
 10. Не пиши «Цитата», не повторяй текст новости - он будет показан над постом отдельно.
-11. {takeaway_rule(takeaway_style)}
+11. {takeaway_rule(takeaway_style, no_takeaway)}
 {hook_rule}{voice_rule}14. {MILITARY_RULE}
 15. {verse_rule}
 16. {HISTORY_RULE}
@@ -397,15 +444,21 @@ def build_system_prompt(
 18. {STYLE_RULE}
 19. Никакой семьи и здоровья: ни мамы, ни жён, ни детей и внуков, ни болезни, таблеток и врачей. Это публичный канал.
 20. {ONE_DEVICE_RULE}
+21. Назови героя новости (компанию, человека) прямо и зацепись за одну её цифру или деталь. Не называешь ты только своих клиентов и проекты под NDA.
+22. Не презирай людей группами (клерки, девочки, зумеры, «стареющие»): бей по поступку конкретного героя.
+23. Без метафор смерти, самоубийства и казни для бизнеса и рекламы.
 """
 
 
 def build_user_prompt(news: dict) -> str:
-    parts = [f"НОВОСТЬ: {news.get('content', '').strip()}"]
+    """Оригинал первым: пересказ редактора однажды описывал другой пост, и комментарий уезжал от цитаты (аудит 25.10)."""
+    parts = []
     if news.get("original_text"):
-        parts.append(f"ОРИГИНАЛЬНЫЙ ТЕКСТ ПОСТА-ИСТОЧНИКА:\n{news['original_text'].strip()[:3000]}")
+        parts.append(f"НОВОСТЬ (ОРИГИНАЛ ПОСТА-ИСТОЧНИКА):\n{news['original_text'].strip()[:3000]}")
+    parts.append(f"КРАТКО (пересказ редактора; если расходится с оригиналом, верь оригиналу): {news.get('content', '').strip()}")
     if news.get("channel"):
         parts.append(f"ИСТОЧНИК: @{news['channel']}")
+    parts.append("Пиши только о том, что есть в оригинале. Факты и цифры, которых там нет, не придумывай.")
     return "\n\n".join(parts)
 
 
@@ -536,6 +589,20 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
     return humanize_punctuation(_drop_rubrics(poetry.verse_dashes(text, poetry.load_bank())))
 
 
+# Темы личных заметок чередуются: две заметки подряд были про одного и того же кирасира
+PERSONAL_TOPICS = [
+    ("work", "работа над чужим проектом, в общих чертах и без названий"),
+    ("book", "книга, которую ты сейчас перечитываешь"),
+    ("film", "фильм или сериал, который пересмотрел"),
+    ("soldiers", "солдатики и диорама"),
+    ("city", "Москва: прогулка, улица, место, где ты бываешь"),
+    ("spb", "Петербург"),
+    ("craft", "профессия и время: что изменилось в ремесле"),
+    ("travel", "поездка, которая вдруг вспомнилась"),
+    ("thing", "вещь, которой ты дорожишь, и почему"),
+]
+
+
 def _poetry_plan(history: list[dict], poetry_mode: bool | None) -> tuple[list[dict], list[dict]]:
     """(банк цитат, кандидаты для этого поста). Кандидатов нет, если стихов в посте не будет."""
     bank = poetry.load_bank()
@@ -581,7 +648,9 @@ async def generate_post(
         [h.get("format", "") for h in history], allowed=poetry.ELIGIBLE_FORMATS if candidates else None)
     last_tone = history[-1].get("tone") if history else None
     query = news.get("content", "") or news.get("original_text", "")
-    rag_ctx = await rag_service.search(query, top_k=3)
+    # База лекций: для байки всегда, для разборов иногда, в остальных форматах не нужна. Без ТВ-приписки к запросу.
+    use_rag = fmt["story"] or (fmt["id"] in ("producer_fix", "twist") and random.random() < RAG_PROB_FIX)
+    rag_ctx = await rag_service.search(query, top_k=3, enhance=False) if use_rag else ""
     recent_openings = [h["opening"] for h in history[-6:] if h.get("opening")]
 
     # Живой колумнист: личность из приватного файла, настроение и сцена дня, память о своих постах
@@ -599,15 +668,17 @@ async def generate_post(
     banned = variety.banned_motifs(history)
     if not history_allowed(fmt["id"], news) or candidates:
         banned = list(dict.fromkeys(banned + ["history"]))  # без исторической рифмы в новости истории нет совсем
-    style_id, style = variety.pick_takeaway_style(history, random)
+    style_id, style = variety.pick_takeaway_style(history, random, fmt["id"])
+    optic_id, optic = pick_optic(history)
     system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook,
                                         persona=persona, day_block=day_block, recent_block=recent_block,
                                         poetry_block=poetry.prompt_block(candidates) if candidates else "",
-                                        variety_block=variety.prompt_block(banned), takeaway_style=style)
+                                        variety_block=variety.prompt_block(banned), takeaway_style=style,
+                                        no_takeaway=style_id == "none", optic=optic)
     user_prompt = build_user_prompt(news)
     logger.info(f"✍️ [Post] Формат: {fmt['name']}, тон: {tone}, настроение: {day['mood'] if day else '-'}, "
                 f"база знаний: {'да' if rag_ctx else 'нет'}, стихи: {'да' if candidates else 'нет'}, "
-                f"вывод: {style_id}, запреты: {banned}")
+                f"вывод: {style_id}, оптика: {optic_id}, запреты: {banned}")
 
     comment = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(comment)
@@ -629,7 +700,7 @@ async def generate_post(
     cta = bool(cta_handle) and needs_cta(history)
     meta = {
         "format": fmt["id"], "tone": tone, "mood": day["mood"] if day else None, "hook": hook, "cta": cta,
-        "poetry": _poetry_meta(verse), "takeaway_style": style_id,
+        "poetry": _poetry_meta(verse), "takeaway_style": style_id, "optic": optic_id,
         "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
     return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta
@@ -648,6 +719,8 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
         or "- (личных заметок ещё не было)"
     ending = ("Закончи коротким вопросом к читателям." if COMMENTS_OPEN and random.random() < PERSONAL_HOOK_PROBABILITY
               else "Без вопроса к читателям в конце.")
+    recent_topics = {e.get("topic") for e in columnist.journal_recent(2)}
+    topic_id, topic = random.choice([t for t in PERSONAL_TOPICS if t[0] not in recent_topics] or PERSONAL_TOPICS)
     verse_rule = "Цитату из стихов бери только из блока [СТИХИ В ЭТОЙ ЗАМЕТКЕ]." if candidates else poetry.NO_VERSE_RULE
     poetry_block = poetry.prompt_block(candidates).replace("[СТИХИ В ЭТОМ ПОСТЕ]", "[СТИХИ В ЭТОЙ ЗАМЕТКЕ]") \
         if candidates else ""
@@ -674,12 +747,10 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
 КАК ПИСАТЬ:
 1. 350-800 символов. Один момент, одна мысль. Без морали в конце и без рубрик-меток.
    Не начинай с кофе и погоды: войди в заметку через сам момент или мысль.
-2. Тема одна, на выбор: работа над чужим проектом в общих чертах, книга или фильм, которые перечитываешь
-   или пересматриваешь, солдатики и диорама, город, Петербург, профессия и время, самоирония,
-   путешествия. Бери только то, что есть в «ЧТО Я МОГУ РАССКАЗЫВАТЬ О СЕБЕ», и мелкие бытовые детали дня.
+2. Тема этой заметки: {topic}. Бери только то, что есть в «ЧТО Я МОГУ РАССКАЗЫВАТЬ О СЕБЕ», и мелкие бытовые детали дня.
 3. Не касайся того, что в блоке «ЧЕГО Я В КАНАЛЕ НЕ КАСАЮСЬ НИКОГДА». Не выдумывай встреч, разговоров
    и совместной работы с реальными людьми.
-4. Тон: {tone}. Настроение дня: {day['mood']}.
+4. Манера: {TONE_MANNER.get(tone, tone)}. Само чувство словами не называй.
 5. Голос из блока ГОЛОС. Без заголовков, списков, markdown и звёздочек.
 6. {ending}
 7. Запрещённые обороты: {banned}.
@@ -700,7 +771,7 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
             raise ValueError("В заметке осталась неточная цитата из стихов")
         logger.warning("⚠️ [Post] Цитата из стихов в заметке неточная: пишем заметку заново без стихов.")
         return await generate_personal(llm, history, poetry_mode=False)
-    meta = {"format": "personal", "tone": tone, "mood": day["mood"], "hook": False, "cta": False,
+    meta = {"format": "personal", "tone": tone, "mood": day["mood"], "hook": False, "cta": False, "topic": topic_id,
             "poetry": _poetry_meta(verse), "opening": _opening(text), "chars": len(text), "text": text}
     return html.escape(text), meta
 

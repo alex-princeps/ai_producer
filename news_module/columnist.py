@@ -13,6 +13,7 @@
 import json
 import os
 import random
+import re
 from datetime import date, datetime, timedelta
 
 import pytz
@@ -38,6 +39,15 @@ MOODS = {
     "усталость": ["усталость и скука", "холодная ирония", "ностальгия"],
     "лёгкость": ["весёлое хулиганство", "неожиданное уважение", "азарт", "ностальгия"],
     "тревога": ["тревога", "холодная ирония", "брезгливость"],
+}
+# Как настроение звучит в тексте (само слово модели не показываем: она его переписывала в пост)
+MOOD_MANNER = {
+    "ироничная грусть": "чуть устало, с усмешкой над собой",
+    "азарт": "живо, с охотой спорить",
+    "раздражение": "резче обычного, короче фразы",
+    "усталость": "медленнее обычного, без лишних слов",
+    "лёгкость": "легко, с улыбкой",
+    "тревога": "сдержанно, с недосказанностью",
 }
 # Темперамент: фоновая меланхолия, «ироничная грусть» (библия, §11.4)
 BASE_WEIGHTS = {"ироничная грусть": 30, "азарт": 15, "раздражение": 15, "усталость": 15, "лёгкость": 15, "тревога": 10}
@@ -232,7 +242,7 @@ def describe_day(day: dict, slot: str, mention_allowed: bool) -> str:
     lines = [
         "[ТВОЙ ДЕНЬ - фон, а не тема поста]",
         f"Сегодня {day['weekday']}, {d.day} {MONTHS[d.month - 1]}.",
-        f"Настроение дня: {day['mood']}.",
+        f"Фон дня: {MOOD_MANNER.get(day['mood'], day['mood'])}. Само настроение словами не называй.",
     ]
     if mention_allowed:
         if day["weather"].get(slot):
@@ -264,12 +274,13 @@ def recent_posts_block(history: list[dict], callback_allowed: bool, n: int = 6) 
         when = ""
         if h.get("published_at"):
             when = datetime.fromisoformat(h["published_at"]).astimezone(MSK).strftime("%d.%m") + ": "
-        lines.append(f"- {when}«{h['opening']}»")
+        final = re.split(r"(?<=[.!?…])\s+", (h.get("text") or "").strip())[-1][:140] if h.get("text") else ""
+        lines.append(f"- {when}начало «{h['opening']}»" + (f", финал «{final}»" if final and final != h["opening"] else ""))
     if not lines:
         return ""
     rule = ("Если это действительно в тему, можешь одной фразой сослаться на свой недавний пост "
             "(«на днях писал про…»), но не пересказывай его." if callback_allowed
-            else "Не ссылайся на эти посты и не повторяй их мысли.")
+            else "Не ссылайся на эти посты и не повторяй их мысли, начала и финалы.")
     return "[ЧТО ТЫ ПИСАЛ НЕДАВНО]\n" + "\n".join(lines) + "\n" + rule
 
 
@@ -277,7 +288,7 @@ def journal_recent(n: int = 4) -> list[dict]:
     return _load_json(JOURNAL_PATH, [])[-n:]
 
 
-def journal_add(kind: str, text: str, keep: int = 60):
+def journal_add(kind: str, text: str, keep: int = 60, topic: str | None = None):
     entries = _load_json(JOURNAL_PATH, [])
-    entries.append({"date": datetime.now(MSK).date().isoformat(), "kind": kind, "text": text})
+    entries.append({"date": datetime.now(MSK).date().isoformat(), "kind": kind, "text": text, "topic": topic})
     _save_json(JOURNAL_PATH, entries[-keep:])
