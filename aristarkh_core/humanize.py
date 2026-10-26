@@ -49,5 +49,16 @@ def humanize_punctuation(text: str, rng: random.Random | None = None) -> str:
         return style
 
     text = _SPACED_DASH.sub(pick, text)
+    # «=» модель пишет и сама (правило «дефис, двоеточие или =»): перед «это» - дефис, и не больше одного «=» на текст
+    text = re.sub(r"[ \u00a0]+=[ \u00a0]+(?=это\b)", " - ", text)
+    seen = [False]
+
+    def one_eq(m):
+        if seen[0]:
+            return " - "
+        seen[0] = True
+        return m.group(0)
+
+    text = re.sub(r"[ \u00a0]+=[ \u00a0]+", one_eq, text)
     text = _NUM_RANGE.sub("-", text)
     return _ANY_DASH.sub("-", text)
