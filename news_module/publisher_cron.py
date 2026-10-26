@@ -5,7 +5,7 @@ import html
 import json
 import os
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from aiogram import Bot
 from aiogram.types import LinkPreviewOptions
 from aiogram.client.session.aiohttp import AiohttpSession  # [NEW] Для прокси-сессии
@@ -13,10 +13,10 @@ from aristarkh_core.config import config, logger
 from aristarkh_core.gemini import LLMService
 from aristarkh_core.rag_chroma import RAGService
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
-from news_module import columnist, poetry, typos
+from news_module import columnist, curator, poetry, typos
 from news_module.state_io import update_json
 from news_module.post_builder import (
-    BOT_CTA_ENABLED, append_history, generate_personal, generate_post, schedule_followup,
+    BOT_CTA_ENABLED, POST_FORMATS, append_history, generate_personal, generate_post, schedule_followup,
 )
 
 # Канал для постов (задаётся только через .env)
@@ -123,7 +123,17 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
         personal = slot == "evening" and now.weekday() == 6 and random.random() < PERSONAL_SUNDAY_PROB
 
     digest = news_data.get("current_digest", {})
-    if not personal:
+    # Куратор: Ари сам выбирает из свежего короткого списка (NEWS_CURATOR=on). Список старше 6 часов не берём.
+    sl = news_data.get("current_shortlist") or {}
+    try:
+        sl_fresh = datetime.now() - datetime.strptime(sl.get("date", ""), "%Y-%m-%d %H:%M:%S") < timedelta(hours=6)
+    except ValueError:
+        sl_fresh = False
+    use_curator = (curator.CURATOR_ON and not personal and columnist.load_persona() is not None
+                   and bool(sl.get("items")) and (sl_fresh or dry_run))
+    if use_curator:
+        logger.info(f"🧐 [Publisher] Ари сам листает ленту: в списке {len(sl['items'])} новостей.")
+    elif not personal:
         if not digest or "content" not in digest:
             logger.error("❌ [Publisher] В tg_news.json нет актуального current_digest.")
             return
@@ -168,11 +178,41 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
 
         try:
             history = news_data.get("post_history", [])
+            curator_ctx = None
             if personal:
                 # === Личная заметка: без новости, без шапки, без добивки ===
                 logger.info("🧠 [Publisher] Аристарх пишет личную заметку...")
                 channel_post, post_meta = await generate_personal(llm, history, poetry_mode=force_poetry or None)
             else:
+                hook_line = return_of = None
+                curator_ctx = None
+                fmt_wanted = force_format
+                if use_curator:
+                    now_utc = datetime.now(timezone.utc)
+                    cands = [dict(c) for c in sl["items"]]
+                    back = curator.yesterday_story(history, curator.load_log(), news_data.get("digests_history", []), now_utc)
+                    if back:
+                        cands.append(back)
+                    ratings = await curator.rate(llm, cands, history, now_utc)
+                    for c, r in zip(cands, ratings):
+                        logger.info(f"🧐 [Curator] {r['interest']:.0f}/10 @{c.get('channel')} «{c['text'][:60]}» | {r['hook'] or r['why_not']}")
+                    chosen = curator.choose(cands, ratings)
+                    if not chosen:
+                        logger.info("🙅 [Curator] Ничего не зацепило: поста не будет.")
+                        if not dry_run:
+                            curator.log_decision(curator.decision_entry(now_utc, cands, ratings, None))
+                        return
+                    c, r = chosen
+                    digest = {"date": now_utc.strftime("%Y-%m-%d %H:%M:%S"), "context": "curator",
+                              "content": "(пересказа нет, читай оригинал)", "url": c["url"], "channel": c.get("channel"),
+                              "original_text": c["text"]}
+                    hook_line = r["hook"] or None
+                    return_of = c.get("yesterday_post") if c.get("is_return") else None
+                    if not fmt_wanted and r.get("format") in {f["id"] for f in POST_FORMATS}:
+                        fmt_wanted = r["format"]
+                    curator_ctx = (now_utc, cands, ratings, chosen)
+                    logger.info(f"🎯 [Curator] Берёт @{c.get('channel')} ({r['interest']:.0f}/10): {hook_line}")
+
                 # === ШАГ 4: Core Beliefs (фон для суждений, если нет файла личности) ===
                 core_beliefs = evolution_engine.get_current_beliefs()
                 logger.info(f"🧬 [Publisher] Загружено убеждений: {len(core_beliefs)}")
@@ -182,9 +222,11 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
                 cta_handle = f"@{(await bot.get_me()).username}" if BOT_CTA_ENABLED else None
                 logger.info("🧠 [Publisher] Аристарх пишет пост...")
                 channel_post, post_meta = await generate_post(
-                    llm, rag_service, core_beliefs, digest, history, force_format, cta_handle=cta_handle,
-                    poetry_mode=force_poetry or None,
+                    llm, rag_service, core_beliefs, digest, history, fmt_wanted, cta_handle=cta_handle,
+                    poetry_mode=force_poetry or None, hook_line=hook_line, return_of=return_of,
                 )
+                if curator_ctx:
+                    post_meta["topic"] = curator_ctx[3][0].get("topic")
             logger.info(f"   Пост сгенерирован: {len(channel_post)} символов (формат {post_meta['format']})")
 
             typo = None
@@ -231,6 +273,13 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
             # === ШАГ 7: История постов и флаг published - в свежую копию файла под блокировкой ===
             def record(data: dict):
                 data["post_history"] = append_history(data.get("post_history", []), post_meta)
+                if not personal and curator_ctx:
+                    # Выбор куратора становится текущей новостью, и её ссылка больше не попадёт в ленту
+                    chosen_digest = {**digest, "published": True, "published_at": published_at.isoformat(),
+                                     "published_message_id": sent_message.message_id}
+                    data["digests_history"] = (data.get("digests_history", []) + [chosen_digest])[-30:]
+                    data["current_digest"] = chosen_digest
+                    return
                 current = data.get("current_digest", {})
                 if not personal and current.get("url") == digest.get("url"):
                     current.update(published=True, published_at=published_at.isoformat(),
@@ -239,6 +288,9 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
             try:
                 update_json(news_path, record)
                 logger.info("📝 [Publisher] История постов сохранена.")
+                if not personal and curator_ctx:
+                    curator.log_decision(curator.decision_entry(curator_ctx[0], curator_ctx[1], curator_ctx[2],
+                                                                curator_ctx[3], sent_message.message_id))
             except Exception as e:
                 logger.error(f"❌ [Publisher] Не удалось сохранить tg_news.json: {e}")
                 logger.warning("⚠️ При следующем запуске возможен повторный пост!")
