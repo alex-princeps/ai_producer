@@ -288,7 +288,7 @@ def find_military(text: str, allow_hobby: bool = False) -> list[str]:
 
 RAG_PROB_FIX = 0.3  # доля разборов и мысленных экспериментов, где подтягивается база лекций
 HOOK_PROBABILITY = 0.25  # доля постов (кроме «Вопроса залу»), которые задают вопрос подписчикам
-DAY_MENTION_PROBABILITY = 0.12  # в скольких постах можно мимоходом упомянуть свой день или погоду (было 0.3: «у окна» через пост)
+DAY_MENTION_PROBABILITY = 0.08  # в скольких постах можно мимоходом упомянуть свой день или погоду (было 0.3: «у окна» через пост)
 CALLBACK_PROBABILITY = 0.15    # в скольких постах можно сослаться на свой недавний пост
 PERSONAL_HOOK_PROBABILITY = 0.3  # личная заметка заканчивается вопросом к читателям
 
@@ -659,7 +659,10 @@ async def generate_post(
         now = datetime.now(columnist.MSK)
         day = columnist.get_day(now)
         tone = columnist.pick_tone(day, last_tone)
-        day_block = columnist.describe_day(day, columnist.slot_of(now), random.random() < DAY_MENTION_PROBABILITY)
+        # День можно упомянуть, только если его детали не звучали в последних десяти постах (квоты variety)
+        recent_day = {"window_weather", "coffee", "patriki", "routine"} & set(variety.banned_motifs(history))
+        mention = not recent_day and random.random() < DAY_MENTION_PROBABILITY
+        day_block = columnist.describe_day(day, columnist.slot_of(now), mention)
         recent_block = columnist.recent_posts_block(history, random.random() < CALLBACK_PROBABILITY)
     else:
         tone = choose_tone(last_tone)
