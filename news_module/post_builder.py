@@ -665,7 +665,8 @@ async def generate_post(
         tone = choose_tone(last_tone)
 
     hook = COMMENTS_OPEN and fmt["id"] != "question" and random.random() < HOOK_PROBABILITY
-    banned = variety.banned_motifs(history)
+    banned = variety.situational(variety.banned_motifs(history),
+                                 f"{news.get('content', '')} {news.get('original_text', '')}")
     if not history_allowed(fmt["id"], news) or candidates:
         banned = list(dict.fromkeys(banned + ["history"]))  # без исторической рифмы в новости истории нет совсем
     style_id, style = variety.pick_takeaway_style(history, random, fmt["id"])
@@ -725,7 +726,7 @@ async def generate_personal(llm, history: list[dict], poetry_mode: bool | None =
     poetry_block = poetry.prompt_block(candidates).replace("[СТИХИ В ЭТОМ ПОСТЕ]", "[СТИХИ В ЭТОЙ ЗАМЕТКЕ]") \
         if candidates else ""
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
-    motifs = variety.banned_motifs(history)
+    motifs = [k for k in variety.banned_motifs(history) if k != "routine"]  # быт и хобби - материал заметки
     system_prompt = f"""
 {persona}
 
