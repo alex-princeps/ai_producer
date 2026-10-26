@@ -57,3 +57,4 @@ persona_private/
 *.err
 backups/
 *.bundle
+curator_log.json

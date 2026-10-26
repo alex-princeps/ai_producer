@@ -361,6 +361,7 @@ def build_system_prompt(
     fmt: dict, tone: str, core_beliefs: list, rag_context: str, recent_openings: list[str], hook: bool = False,
     persona: str | None = None, day_block: str = "", recent_block: str = "", poetry_block: str = "",
     variety_block: str = "", takeaway_style: str | None = None, no_takeaway: bool = False, optic: str = "",
+    angle_block: str = "",
 ) -> str:
     beliefs_text = "\n".join(f"- {b}" for b in core_beliefs) if core_beliefs else "- нет"
     openings = "\n".join(f"- «{o}»" for o in recent_openings) if recent_openings else "- (постов ещё не было)"
@@ -411,6 +412,8 @@ def build_system_prompt(
 {recent_block}
 
 {variety_block}
+
+{angle_block}
 
 ЗАДАЧА ЭТОГО ПОСТА: {fmt['instruction']}
 ДЛИНА: {lo}-{hi} символов без финального вывода для читателя. Это жёсткое требование: не длиннее.
@@ -634,6 +637,7 @@ def _poetry_meta(entry: dict | None) -> dict | None:
 async def generate_post(
     llm, rag_service, core_beliefs: list, news: dict, history: list[dict], force_format: str | None = None,
     cta_handle: str | None = None, poetry_mode: bool | None = None,
+    hook_line: str | None = None, return_of: str | None = None,
 ) -> tuple[str, dict]:
     """
     Генерирует пост. Возвращает (html для отправки, метаданные для истории).
@@ -673,12 +677,25 @@ async def generate_post(
     if not history_allowed(fmt["id"], news) or candidates:
         banned = list(dict.fromkeys(banned + ["history"]))  # без исторической рифмы в новости истории нет совсем
     style_id, style = variety.pick_takeaway_style(history, random, fmt["id"])
+    # Угол от куратора: что его зацепило в новости, или возврат к вчерашней истории
+    angle_block = ""
+    if return_of:
+        angle_block = (
+            "[ТЫ ВОЗВРАЩАЕШЬСЯ К ВЧЕРАШНЕЙ ИСТОРИИ]\n"
+            f"Вчера ты уже написал об этом: «{return_of.strip()[:700]}».\n"
+            "Сегодня коротко о том, что додумал за ночь: новый поворот, деталь или сомнение. Не повторяй вчерашние "
+            "мысли и формулировки и не пересказывай новость заново. Вернись к теме так, как вернулся бы живой человек."
+        )
+        style_id, style = "none", None
+    if hook_line:
+        angle_block += ("\n\n" if angle_block else "") + (
+            "[ЧТО ТЕБЯ ЗАЦЕПИЛО В ЭТОЙ НОВОСТИ - это твой угол, от него и строй пост]\n" + hook_line.strip())
     optic_id, optic = pick_optic(history)
     system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook,
                                         persona=persona, day_block=day_block, recent_block=recent_block,
                                         poetry_block=poetry.prompt_block(candidates) if candidates else "",
                                         variety_block=variety.prompt_block(banned), takeaway_style=style,
-                                        no_takeaway=style_id == "none", optic=optic)
+                                        no_takeaway=style_id == "none", optic=optic, angle_block=angle_block)
     user_prompt = build_user_prompt(news)
     logger.info(f"✍️ [Post] Формат: {fmt['name']}, тон: {tone}, настроение: {day['mood'] if day else '-'}, "
                 f"база знаний: {'да' if rag_ctx else 'нет'}, стихи: {'да' if candidates else 'нет'}, "
@@ -699,12 +716,14 @@ async def generate_post(
         if poetry_mode is False:
             raise ValueError("В посте осталась неточная цитата из стихов")
         logger.warning("⚠️ [Post] Цитата из стихов неточная и после переписывания: пишем пост заново без стихов.")
-        return await generate_post(llm, rag_service, core_beliefs, news, history, fmt["id"], cta_handle, poetry_mode=False)
+        return await generate_post(llm, rag_service, core_beliefs, news, history, fmt["id"], cta_handle, poetry_mode=False,
+                                   hook_line=hook_line, return_of=return_of)
 
     cta = bool(cta_handle) and needs_cta(history)
     meta = {
         "format": fmt["id"], "tone": tone, "mood": day["mood"] if day else None, "hook": hook, "cta": cta,
-        "poetry": _poetry_meta(verse), "takeaway_style": style_id, "optic": optic_id,
+        "poetry": _poetry_meta(verse), "takeaway_style": style_id, "optic": optic_id, "url": news.get("url"),
+        "hook": hook_line, "return": bool(return_of),
         "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
     return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta

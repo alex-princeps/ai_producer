@@ -235,6 +235,75 @@ def drop_overused_ai(candidates: list[dict], recent: list[dict]) -> list[dict]:
     return no_ai or candidates
 
 
+def build_shortlist(all_posts: list, limit: int = 10, recent: list[dict] | None = None) -> list[dict]:
+    """
+    Короткий список для куратора (Ари выбирает сам, news_module/curator.py): жёсткие фильтры кодом,
+    без дублей, разные темы и каналы, свежие вперёд. Вкус и событийность оценивает уже сам Ари.
+    """
+    from news_module.curator import topic_of
+    published = load_published_urls()
+    posts = [p for p in all_posts if p["url"] not in published and len(p.get("text", "")) >= 150
+             and not is_blocked_topic(p["text"])]
+    posts = drop_overused_ai(drop_ads(posts), recent if recent is not None else load_recent_digests())
+    seen, unique = set(), []
+    for p in sorted(posts, key=lambda x: x.get("datetime", ""), reverse=True):
+        key = re.sub(r"\W+", " ", p["text"].lower())[:80]
+        if key not in seen:
+            seen.add(key)
+            unique.append({**p, "topic": topic_of(p["text"])})
+    # По очереди: сначала по одной новости на тему, потом остальные, чтобы в списке было разное
+    by_topic: dict[str, list] = {}
+    for p in unique:
+        by_topic.setdefault(p["topic"], []).append(p)
+    out = []
+    while len(out) < limit and any(by_topic.values()):
+        for t in list(by_topic):
+            if by_topic[t] and len(out) < limit:
+                out.append(by_topic[t].pop(0))
+    return out
+
+
+def get_posts_paged(channel_username: str, days: int, max_pages: int = 15) -> list:
+    """Посты канала за несколько дней, листая веб-ленту t.me/s/ назад (для тестов и разбора ленты)."""
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"}
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    out, before = [], None
+    for _ in range(max_pages):
+        url = f"https://t.me/s/{channel_username}" + (f"?before={before}" if before else "")
+        try:
+            resp = requests.get(url, headers=headers, timeout=15, proxies=PROXIES)
+            resp.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ @{channel_username}: {e}")
+            break
+        soup = BeautifulSoup(resp.text, "html.parser")
+        msgs = soup.find_all("div", class_="tgme_widget_message")
+        if not msgs:
+            break
+        ids, oldest = [], None
+        for msg in msgs:
+            post = msg.get("data-post", "")
+            if "/" in post:
+                ids.append(int(post.split("/")[1]))
+            text_div = next((d for d in msg.find_all("div", class_="tgme_widget_message_text")
+                             if "js-message_reply_text" not in d.get("class", [])), None)
+            time_tag = msg.find("time", class_="time")
+            if not text_div or not time_tag or not time_tag.has_attr("datetime"):
+                continue
+            for br in text_div.find_all("br"):
+                br.replace_with("\n")
+            t = datetime.fromisoformat(time_tag["datetime"])
+            oldest = t if oldest is None or t < oldest else oldest
+            if t >= cutoff:
+                out.append({"text": re.sub(r"[ \t]+", " ", text_div.get_text()).strip(), "url": f"https://t.me/{post}",
+                            "datetime": t.strftime("%Y-%m-%d %H:%M:%S"), "channel": channel_username})
+        if not ids or (oldest and oldest < cutoff):
+            break
+        before = min(ids)
+        time.sleep(1.5)
+    return out
+
+
 def load_published_urls() -> set:
     """Ссылки на новости, которые уже комментировались (чтобы не выбрать повторно)."""
     if not os.path.exists(JSON_FILENAME):
@@ -406,7 +475,12 @@ def main():
     }
     save_to_json(save_data)
     
-    # 3. Выбираем top-новость через Flash
+    # 2.5. Короткий список для куратора: Ари сам решает, что из него комментировать (NEWS_CURATOR=on)
+    shortlist = build_shortlist(all_recent_posts)
+    save_to_json({"current_shortlist": {"date": f"{current_date} {current_time}", "context": run_context, "items": shortlist}})
+    print(f"🗂️ Короткий список для куратора: {len(shortlist)}")
+
+    # 3. Выбираем top-новость через Flash (запасной путь, если куратор выключен или не сработал)
     top_news = filter_top_news(all_recent_posts)
     
     if not top_news:
