@@ -148,15 +148,15 @@
   <text x="62" y="794" class="s">"thesis of the day" (strength 0–10)</text>
   <path d="M292 770 H322" class="life" marker-end="url(#arrowO)"/>
 
-  <text x="332" y="754" class="t">📰 Newsroom ×3 a day</text>
+  <text x="332" y="754" class="t">📰 Newsroom ×2 a day</text>
   <text x="332" y="776" class="s">Telegram channels → LLM editor picks</text>
   <text x="332" y="794" class="s">one story (by index: real link &amp; quote)</text>
   <path d="M632 770 H662" class="life" marker-end="url(#arrowO)"/>
 
   <path d="M720 724 V690 H155 V668" class="life" marker-end="url(#arrowO)"/>
   <text x="672" y="754" class="t">✍️ Columnist</text>
-  <text x="672" y="776" class="s">9 post formats · tone palette ·</text>
-  <text x="672" y="794" class="s">anti-cliché · replies to itself later</text>
+  <text x="672" y="776" class="s">11 formats · manner &amp; optic ·</text>
+  <text x="672" y="794" class="s">anti-repeat · replies to itself later</text>
   <path d="M912 770 H942" class="life" marker-end="url(#arrowO)"/>
 
   <text x="952" y="754" class="t">🌙 Night: sleep &amp; reflection</text>
