@@ -588,6 +588,9 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
     if variety.has_private(text):
         # Семья и здоровье в публичном канале: такой пост лучше не публиковать вовсе
         raise ValueError("После переписывания в тексте осталось личное (семья или здоровье)")
+    if variety.has_bio_anchor(text):
+        # Название своего журнала или точный год карьеры проверяется поиском: такой пост не публикуем
+        raise ValueError("После переписывания осталась проверяемая примета биографии (название проекта или год)")
     # Тире внутри строк стиха - дефисом и до общей постобработки: она поставила бы туда «=» или «:»
     return humanize_punctuation(_drop_rubrics(poetry.verse_dashes(text, poetry.load_bank())))
 
@@ -924,12 +927,14 @@ async def generate_followup(llm, post: dict, minutes_since: int, recent_followup
         text = (await llm.generate_standalone(
             system_prompt,
             user_prompt + "\n\nЧЕРНОВИК ДОБИВКИ:\n" + text
-            + "\n\nПерепиши без запрещённых оборотов, без военных метафор, без повторов из своего поста, без семьи и здоровья "
-              "и без выдуманного личного знакомства с реальными людьми.",
+            + "\n\nПерепиши без запрещённых оборотов, без военных метафор, без повторов из своего поста, без семьи и здоровья, "
+              "без выдуманного личного знакомства с реальными людьми и без названий своих прошлых проектов и точных лет своей карьеры.",
         )).replace("*", "").strip()
         _ensure_generated(text)
         if find_contact_claims(text):
             raise ValueError("В добивке осталось выдуманное знакомство с реальным человеком")
     if variety.has_private(text):
         raise ValueError("В добивке личное (семья или здоровье)")
+    if variety.has_bio_anchor(text):
+        raise ValueError("В добивке проверяемая примета биографии (название проекта или год)")
     return humanize_punctuation(text)
