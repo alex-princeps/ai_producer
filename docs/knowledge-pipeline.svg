@@ -25,87 +25,87 @@
   <rect width="1280" height="640" fill="url(#bg)"/>
   <rect width="1280" height="640" fill="url(#grid)" opacity="0.55"/>
 
-  <text x="40" y="56" class="title">Bring your own knowledge base</text>
-  <text x="40" y="82" class="sub">Drop files in a folder. Aristarkh turns them into professional instinct, and remembers whose stories are whose.</text>
+  <text x="40" y="56" class="title">Подключите свою базу знаний</text>
+  <text x="40" y="82" class="sub">Положите файлы в папку. Аристарх превратит их в профессиональное чутьё и не перепутает свои истории с чужими.</text>
 
   <!-- INGEST -->
-  <text x="40" y="126" class="h" fill="#3fb950">INGEST · once, on first start</text>
+  <text x="40" y="126" class="h" fill="#3fb950">ИНДЕКСАЦИЯ · один раз при первом запуске</text>
 
   <rect x="40" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
-  <text x="58" y="170" class="t">📂 Your sources</text>
+  <text x="58" y="170" class="t">📂 Ваши материалы</text>
   <text x="58" y="194" class="m">.pdf .docx .txt .md</text>
-  <text x="58" y="216" class="s">lectures, playbooks, essays,</text>
-  <text x="58" y="234" class="s">war stories, your own notes</text>
-  <text x="58" y="272" class="joke">garbage in = garbage in 4K</text>
+  <text x="58" y="216" class="s">лекции, методички, эссе,</text>
+  <text x="58" y="234" class="s">кейсы, рабочие заметки</text>
+  <text x="58" y="272" class="joke">мусор на входе = мусор в 4K</text>
 
   <path d="M260 215 H288" class="flow" marker-end="url(#a)"/>
   <rect x="290" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
-  <text x="308" y="170" class="t">✂️ Smart splitter</text>
-  <text x="308" y="194" class="s">paragraph → sentence → word</text>
-  <text x="308" y="214" class="m">1200 chars · 200 overlap</text>
-  <text x="308" y="236" class="s">thoughts stay whole</text>
-  <text x="308" y="272" class="joke">cuts like an editor, not a butcher</text>
+  <text x="308" y="170" class="t">✂️ Умная нарезка</text>
+  <text x="308" y="194" class="s">абзац → предложение → слово</text>
+  <text x="308" y="214" class="m">1200 симв. · нахлёст 200</text>
+  <text x="308" y="236" class="s">мысли остаются целыми</text>
+  <text x="308" y="272" class="joke">режет как монтажёр, не мясник</text>
 
   <path d="M510 215 H538" class="flow" marker-end="url(#a)"/>
   <rect x="540" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
-  <text x="558" y="170" class="t">🏷 Source stamp</text>
-  <text x="558" y="194" class="m">[SOURCE: file name]</text>
-  <text x="558" y="216" class="s">glued to every chunk, so the</text>
-  <text x="558" y="234" class="s">model knows who said it</text>
-  <text x="558" y="272" class="joke">provenance, not vibes</text>
+  <text x="558" y="170" class="t">🏷 Штамп источника</text>
+  <text x="558" y="194" class="m">[SOURCE: имя файла]</text>
+  <text x="558" y="216" class="s">клеится к каждому куску,</text>
+  <text x="558" y="234" class="s">чтобы знать, чьи это слова</text>
+  <text x="558" y="272" class="joke">происхождение, а не вайб</text>
 
   <path d="M760 215 H788" class="flow" marker-end="url(#a)"/>
   <rect x="790" y="140" width="220" height="150" rx="14" class="card" stroke="#3fb950"/>
-  <text x="808" y="170" class="t">🧬 Embeddings</text>
+  <text x="808" y="170" class="t">🧬 Эмбеддинги</text>
   <text x="808" y="194" class="m">gemini-embedding-001</text>
-  <text x="808" y="216" class="s">batched, rate-limit friendly</text>
-  <text x="808" y="272" class="joke">prose → a few thousand floats</text>
+  <text x="808" y="216" class="s">батчами, бережно к лимитам</text>
+  <text x="808" y="272" class="joke">проза → пара тысяч флоатов</text>
 
   <path d="M1010 215 H1038" class="flow" marker-end="url(#a)"/>
   <rect x="1040" y="140" width="200" height="150" rx="14" class="card" stroke="#3fb950"/>
   <text x="1058" y="170" class="t">🗄 ChromaDB</text>
   <text x="1058" y="194" class="m">aristarkh_knowledge</text>
-  <text x="1058" y="216" class="s">persistent, indexed once,</text>
-  <text x="1058" y="234" class="s">self-healing on corruption</text>
-  <text x="1058" y="272" class="joke">it's a vector DB, not a diary</text>
+  <text x="1058" y="216" class="s">на диске, строится раз,</text>
+  <text x="1058" y="234" class="s">самолечение при сбое</text>
+  <text x="1058" y="272" class="joke">векторная БД, а не дневник</text>
 
   <!-- down arrow to retrieval -->
   <path d="M1140 290 V352" class="flow" marker-end="url(#a)"/>
 
   <!-- RETRIEVE -->
-  <text x="40" y="340" class="h" fill="#bc8cff">RECALL · every message and every post</text>
+  <text x="40" y="340" class="h" fill="#bc8cff">ВОСПОМИНАНИЕ · на каждое сообщение и каждый пост</text>
 
   <rect x="40" y="354" width="300" height="150" rx="14" class="card" stroke="#bc8cff"/>
-  <text x="58" y="384" class="t">📨 A message or a news story</text>
-  <text x="58" y="408" class="s">query + domain hint, top-k chunks</text>
-  <text x="58" y="428" class="m">k = 5 in chat · k = 3 in posts</text>
-  <text x="58" y="486" class="joke">relevant, not just similar</text>
+  <text x="58" y="384" class="t">📨 Сообщение или новость</text>
+  <text x="58" y="408" class="s">запрос + подсказка домена, top-k</text>
+  <text x="58" y="428" class="m">k = 5 в чате · k = 3 в постах</text>
+  <text x="58" y="486" class="joke">по делу, а не просто похожее</text>
 
   <path d="M190 504 V518 H1140 V508" class="flow" marker-end="url(#a)"/>
   <path d="M1040 430 H1000" class="flow" marker-end="url(#a)"/>
   <rect x="690" y="354" width="310" height="150" rx="14" class="card" stroke="#bc8cff"/>
-  <text x="708" y="384" class="t">🛡 Provenance rules</text>
-  <text x="708" y="408" class="s">methodology → "my expertise, my words"</text>
-  <text x="708" y="428" class="s">someone's first-person story →</text>
-  <text x="708" y="446" class="s">"a colleague once told me…"</text>
-  <text x="708" y="486" class="joke">never "according to my knowledge base"</text>
+  <text x="708" y="384" class="t">🛡 Правила авторства</text>
+  <text x="708" y="408" class="s">методология → «мой опыт, мои слова»</text>
+  <text x="708" y="428" class="s">чужая история от первого лица →</text>
+  <text x="708" y="446" class="s">«коллега как-то рассказывал…»</text>
+  <text x="708" y="486" class="joke">никаких «согласно моей базе знаний»</text>
 
   <path d="M690 430 H650" class="flow" marker-end="url(#a)"/>
   <rect x="370" y="354" width="280" height="150" rx="14" class="card" stroke="#bc8cff"/>
-  <text x="388" y="384" class="t">🎭 Persona voice</text>
-  <text x="388" y="408" class="s">knowledge becomes instinct:</text>
-  <text x="388" y="428" class="s">a 55-year-old showrunner who</text>
-  <text x="388" y="446" class="s">"just knows how this works"</text>
-  <text x="388" y="486" class="joke">sounds like a pro, cites like a pro</text>
+  <text x="388" y="384" class="t">🎭 Голос персонажа</text>
+  <text x="388" y="408" class="s">знания становятся чутьём:</text>
+  <text x="388" y="428" class="s">55-летний шоураннер, который</text>
+  <text x="388" y="446" class="s">«просто знает, как это устроено»</text>
+  <text x="388" y="486" class="joke">звучит как профи, а не реферат</text>
 
   <rect x="1040" y="354" width="200" height="150" rx="14" class="card" stroke="#bc8cff"/>
-  <text x="1058" y="384" class="t">🔎 Similarity</text>
-  <text x="1058" y="408" class="s">nearest neighbours (L2)</text>
-  <text x="1058" y="428" class="s">+ source headers</text>
-  <text x="1058" y="486" class="joke">no LangChain was harmed</text>
+  <text x="1058" y="384" class="t">🔎 Близость</text>
+  <text x="1058" y="408" class="s">ближайшие соседи (L2)</text>
+  <text x="1058" y="428" class="s">+ штампы источников</text>
+  <text x="1058" y="486" class="joke">ни один LangChain не пострадал</text>
 
   <!-- footer -->
   <rect x="40" y="532" width="1200" height="72" rx="14" class="card" stroke="#e3a73b"/>
-  <text x="58" y="562" class="t" fill="#e3a73b">Demo corpus included</text>
-  <text x="58" y="586" class="s">knowledge_base/demo/ · four original methodology notes + one fictional colleague's war story that the persona must never claim as its own. Replace with your stuff, restart, done.</text>
+  <text x="58" y="562" class="t" fill="#e3a73b">Демо-корпус в комплекте</text>
+  <text x="58" y="586" class="s">knowledge_base/demo/ · четыре заметки по методологии + одна чужая байка от первого лица, которую персонаж не вправе выдавать за свою. Замените на свои файлы и перезапустите.</text>
 </svg>

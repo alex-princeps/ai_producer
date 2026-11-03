@@ -1,147 +1,150 @@
-# Aristarkh Gradov — an AI persona that thinks before it speaks
+# Аристарх Градов — ИИ-личность, которая думает, прежде чем говорить
 
-A Telegram-native character agent: a cynical 55-year-old TV showrunner who has his own mood, remembers you, knows where he is right now, sometimes decides you are not worth an answer — and runs a Telegram channel on his own, two posts a day.
+Персонаж-агент для Telegram: циничный 55-летний телевизионный шоураннер и медиапродюсер. У него своё настроение, он помнит собеседника, знает, где находится прямо сейчас, иногда решает, что вы не стоите ответа — и сам ведёт авторский Telegram-канал, два поста в день.
 
-It is not a chatbot with a long system prompt. Every message goes through a small **cognitive loop**: affective state update → decision about grounding → parallel recall from three memory layers → situational self-awareness → a private inner monologue → a reply that acts on that monologue without ever quoting it. While nobody is writing, he **lives**: reads the news, forms a thesis of the day, writes columns, sleeps, consolidates memory and slowly evolves his beliefs.
+Это не чат-бот с длинным системным промптом. Каждое сообщение проходит **когнитивный цикл**: обновление эмоционального состояния → решение, нужен ли поиск в интернете → параллельное воспоминание из трёх слоёв памяти → ощущение себя в ситуации → скрытый внутренний монолог → ответ, который реализует этот план, но никогда его не цитирует. Пока ему никто не пишет, он **живёт**: читает новости, формирует тезис дня, сам отбирает темы и пишет колонки, спит, консолидирует память и медленно меняет убеждения.
 
-> Aristarkh speaks Russian by default and switches to your language: write to him in English and he answers in English, with a Russian word or two for flavor. The interface follows your Telegram language. His channel posts in Russian: [@producer_gradov](https://t.me/producer_gradov).
+> По умолчанию Аристарх говорит по-русски и переключается на язык собеседника: напишите ему по-английски — ответит по-английски, ввернув пару русских словечек для колорита. Интерфейс подстраивается под язык вашего Telegram. Живой канал: [@producer_gradov](https://t.me/producer_gradov).
 
-![Architecture](docs/architecture.svg)
+![Архитектура](docs/architecture.svg)
 
 <details>
-<summary><b>What a channel post looks like</b> (sample output, translated from Russian)</summary>
+<summary><b>Как выглядит пост в канале</b> (пример генерации)</summary>
 
-> 🔗 News · @prbezposhady
-> Quote: `OpenAI says the new model is "too advanced" to release; Anthropic's IPO prospectus warns about uncontrolled AI…`
+> 🔗 Новость · @prbezposhady
+> Цитата: `OpenAI заявляет, что новая модель «слишком опасна» для релиза; проспект IPO Anthropic пугает инвесторов неконтролируемым ИИ…`
 >
-> Hats off. Tech usually sells us a sterile future with smiling algorithms, but these guys found a real dramatic nerve. Selling shares with a promise of the apocalypse is top-tier work: fear converts to money faster than any positive agenda.
+> Снимаю шляпу. Обычно технари продают нам стерильное будущее с улыбчивыми алгоритмами, а тут ребята нащупали настоящий драматургический нерв. Продавать акции через обещание апокалипсиса = высший пилотаж: страх конвертируется в кэш быстрее любой позитивной повестки.
 >
-> As a producer I'd only crank it up. A prospectus is a tool for clerks. I'd stage a "leak" of engineers' night chats as they panic and try to cut the power. People won't buy this stock for dividends. They'll buy a front-row ticket to the end of the world.
+> Как продюсер я бы только докрутил. Проспект эмиссии — инструмент для клерков. Я бы устроил «утечку» ночных чатов инженеров, которые в панике пытаются дёрнуть рубильник в дата-центре. Акции купят не ради дивидендов. Люди купят билет в первый ряд на конец света.
 >
-> *Format: "Producer's fix" · tone: grudging respect*
+> *Формат: «Докрутка продюсера» · манера: неохотное уважение*
 
 </details>
 
 ---
 
-## Why this project is interesting
+## Чем интересен проект
 
-| Technique | What it does | Where |
+| Приём | Что делает | Где |
 |---|---|---|
-| **Two-pass cognition** | A private `<THOUGHTS>` / `<STRATEGY>` monologue runs first; the public reply is generated as a *performance of the plan*. A tolerant XML parser survives truncated tags. | `gemini.py`, `prompts.py` |
-| **Affective state machine** | `trust`, `fatigue`, `mood` per user, persisted in SQLite. Fatigue grows with each message and resets during nightly "sleep"; trust and mood drift with memory consolidation. They shape length, tone and patience of replies. | `database.py`, `main.py` |
-| **Three-layer memory** | *Knowledge* (ChromaDB, 2.8k chunks of producer lectures), *episodic* (per-user conversation summaries), *semantic* (subject → predicate → object facts). Recalled in parallel with `asyncio.gather`. | `rag_chroma.py`, `semantic_memory.py` |
-| **Cognitive retrieval score** | Episodic memories are ranked like in *Generative Agents*: `1.5·relevance + 1.0·importance + 0.5·recency` with `0.99^hours` decay and a 0.1 floor, so old but important memories never vanish. | `rag_chroma.py` |
-| **Cost-aware micro-router** | A cheap model decides whether a message needs the web at all. Small talk never pays for search; named films, people and fresh news always get grounded. | `gemini.py` |
-| **Situational self** | An internal clock ("you vanished for three days") and a spatial simulator: where he is at this hour of a Moscow weekday or weekend, cached per hour so he doesn't teleport between messages. | `context_simulator.py`, `main.py` |
-| **Persona integrity guards** | Identity lock, anti-fourth-wall rules, and **provenance rules**: someone else's first-person story from the knowledge base is never told as his own. | `prompts.py` |
-| **Lie & topic-jump detection** | Changed facts ("the budget was 10M, not 5M") are cross-checked with semantic memory and called out; abrupt topic switches are noticed. | `prompts.py`, QA block 11 |
-| **Silent treatment** | If the private plan says the user is not worth it, the reply is literally nothing. The history records that he ignored you. | `main.py` |
-| **Autonomous life** | Morning agenda from the news with a self-assessed strength 0–10; nightly reflection and memory consolidation; weekly evolution of at most five core beliefs. | `morning_routine.py`, `worker_cron.py`, `evolution_engine.py` |
-| **Self-publishing columnist** | Telegram channels → an LLM editor picks one story *by index* (so the link and quote are real, not hallucinated) → a post in one of 11 formats (from a two-line jab or a short observation to a producer's thought experiment). The model gets a description of manner instead of a tone label, a rotating optic (money, rules, craft, taste, buyer, city, TV) and a stop-list of clichés; one rewrite pass fixes what slipped through. The header carries the source link and a collapsed quote. The editor drops ads and announcements, rotates topics, caps AI news at two of four, and checks the chosen post by its first words. About half of the posts end with advice to the reader in one of five forms, the rest end on a thought. A link to the bot every 4–5 posts can be switched on with `CHANNEL_BOT_CTA`. A topic filter keeps politics, religion, children, LGBT and intimate goods out. Forecasts can't land in the past and never target a real company's stock. | `news_module/` |
-| **Ari picks his own news** | With `NEWS_CURATOR=on` the editor only prepares a filtered, diverse shortlist; Ari reads it as himself (time of day, weekday, mood, his recent posts, topics he is tired of and topics he has not touched for a week) and rates each item 0-10 with what exactly hooked him. The best item above `CURATOR_MIN_INTEREST` becomes the post, and the hook becomes its angle. If nothing hooks him, there is no post, and the reason is logged. Now and then he returns to yesterday's story. Every decision goes to `curator_log.json`. | `news_module/curator.py` |
-| **Living columnist** | With a private persona file, the channel author has a day: a mood with inertia, a scene from his routine, real Moscow or Petersburg weather, memory of his own recent posts, a personal note on some Sundays, and human timing (random delays, rare skipped slots, a rare typo fixed by editing the post minutes later). About 5% of posts quote his favourite poets from a private bank of fragments verified against two sources; a misquote is rewritten or the post is written again without verse. `variety.py` counts some twenty pet motifs over recent posts and bans whatever exceeded its quota: stock historical parallels, credo lines, jargon, «by the window» openers, the same advice ending. Family and health never reach the public channel. Military metaphors are caught and rewritten. Historical parallels are allowed only when the news itself has a historical hook. With `CHANNEL_COMMENTS=off` posts never invite readers to comment. Writes to `tg_news.json` go through a file lock. | `news_module/columnist.py`, `variety.py`, `typos.py`, `poetry.py` |
-| **Subscriber Q&A** | The admin sends `/razbor <question>` to the bot, gets a ready post as a preview with buttons (publish / another take / cancel), and publishes it to the channel in one tap. | `aristarkh_core/main.py` |
-| **Replies to himself** | A third of posts get a scheduled follow-up: 20 minutes to a day later he replies to his own post with a punchline, an afterthought or a bit of self-irony, like a real channel author. | `followup_cron.py` |
-| **Speaks your language** | Replies in the language the user writes in; buttons, invoices and system messages follow the user's Telegram language (Russian or English). | `prompts.py`, `i18n.py`, `locales/` |
-| **Human punctuation** | Deterministic post-processing, no tokens spent: em dashes, the tell-tale sign of machine text, become `-`, `=` or `:`, the way people actually type in messengers. | `humanize.py` |
-| **Shadow assistant** | After each reply, a second agent suggests the user's next best question, grounded in a producer methodology. | `assistant.py` |
-| **Production details** | Debounce that merges message bursts, "novel mode" for huge inputs, file parsing (PDF/DOCX/XLSX/PPTX), images, retries, JSON recovery for truncated LLM output, Telegram Stars payments, per-event analytics. | `main.py` |
-| **LLM-as-a-Judge QA** | An end-to-end suite that talks to the live bot through a Telethon user account and lets an independent model grade persona stability, jailbreak resistance, memory and agenda handling. | `qa/qa_runner.py` |
+| **Двухпроходное мышление** | Сначала скрытый монолог `<THOUGHTS>` / `<STRATEGY>`, затем публичный ответ как «исполнение плана». Толерантный XML-парсер переживает оборванные теги. | `gemini.py`, `prompts.py` |
+| **Аффективная машина состояний** | `trust`, `fatigue`, `mood` у каждого собеседника, хранятся в SQLite. Усталость растёт с каждым сообщением и сбрасывается ночным «сном»; доверие и настроение меняются при консолидации памяти. Всё это определяет длину, тон и терпение ответов. | `database.py`, `main.py` |
+| **Три слоя памяти** | *Знания* (ChromaDB, 2,8 тыс. фрагментов лекций и эссе продюсера), *эпизодическая память* (саммари разговоров с каждым пользователем), *семантическая* (факты «субъект → предикат → объект»). Вспоминаются параллельно через `asyncio.gather`. | `rag_chroma.py`, `semantic_memory.py` |
+| **Когнитивный скоринг воспоминаний** | Как в *Generative Agents*: `1.5·релевантность + 1.0·важность + 0.5·свежесть` с затуханием `0.99^часы` и полом `0.1`, чтобы старые, но важные события никогда не исчезали. | `rag_chroma.py` |
+| **Экономный микро-роутер поиска** | Быстрая модель решает, нужен ли сообщению интернет. Светская беседа не тратит бюджет на поиск; конкретные фильмы, люди и свежие новости проверяются всегда. | `gemini.py` |
+| **Ощущение себя в ситуации** | Внутренние часы («ты пропал на три дня») и пространственный симулятор: где он находится в этот час московского буднего или выходного дня (с кэшем на час, чтобы не «телепортироваться» между репликами). | `context_simulator.py`, `main.py` |
+| **Защита целостности персоны** | Замок идентичности, запрет ломать «четвёртую стену», фильтр ответа (`reply_guard.py`) и **правила происхождения знаний**: чужая история от первого лица из базы знаний никогда не рассказывается как своя. | `prompts.py`, `reply_guard.py` |
+| **Детектор лжи и скачков темы** | Изменённые факты («бюджет был 10 млн, а не 5») сверяются с семантической памятью, и он указывает на нестыковку; резкую смену темы замечает. | `prompts.py`, QA-блок 11 |
+| **Игнор** | Если во внутреннем плане решено, что собеседник не стоит ответа, ответа буквально нет. В истории диалога остаётся запись, что сообщение проигнорировано. | `main.py` |
+| **Автономная жизнь** | Утренняя повестка по новостям с самооценкой силы тезиса 0–10; ночная рефлексия и консолидация памяти; еженедельная эволюция максимум пяти ключевых убеждений. | `morning_routine.py`, `worker_cron.py`, `evolution_engine.py` |
+| **Колумнист-издатель** | Telegram-каналы → редактор отбирает новость *по индексу* (ссылка и цитата настоящие, без галлюцинаций) → пост в одном из 11 форматов (от двухстрочного укола и наблюдения до продюсерского мысленного эксперимента). Модель получает описание манеры вместо ярлыка тона, сменную оптику (деньги, правила игры, ремесло, вкус, покупатель, город, телек) и стоп-лист клише; проход переписывания чинит то, что просочилось. Шапка поста: ссылка на источник и свёрнутая цитата. Редактор отсекает рекламу и анонсы, чередует темы, ограничивает новости про ИИ двумя из четырёх и сверяет выбранный пост по первым словам. Около половины постов заканчиваются советом читателю в одной из пяти форм, остальные — открытой мыслью. Ссылка на бота раз в 4–5 постов включается через `CHANNEL_BOT_CTA`. Тематический фильтр отсекает политику, религию, детей, ЛГБТ и интим-товары. Прогнозы не улетают в прошлое и не называют тикеры реальных компаний. | `news_module/` |
+| **Ари сам выбирает новости** | При `NEWS_CURATOR=on` редактор готовит только очищенный разнообразный шорт-лист; Ари читает его от своего лица (с учётом времени суток, дня недели, настроения, своих недавних постов, усталости от тем с полураспадом 3 дня и любопытства к темам, которых не касался неделю) и оценивает каждую новость от 0 до 10, формулируя одной фразой, что именно его зацепило. Лучшая новость выше порога `CURATOR_MIN_INTEREST` становится постом, а зацепка — углом атаки. Если ничего не зацепило, слот пропускается с записью причины. Изредка он возвращается ко вчерашней истории. Все решения пишутся в `curator_log.json`. | `news_module/curator.py` |
+| **Живой колумнист** | С приватным файлом персоны у автора канала появляется проживаемый день: настроение с инерцией со вчера, бытовая сцена, реальная погода в Москве или Петербурге (Open-Meteo), память о собственных недавних постах, воскресная личная заметка без информационного повода и человеческий тайминг (случайный сдвиг публикации ±40 минут, редкий пропуск слота, редкая опечатка с правкой поста через пару минут). Около 5% постов цитируют любимых поэтов из выверенного банка фрагментов; неточная или оборванная цитата переписывается либо пост пересобирается без стихов. Модуль `variety.py` отслеживает около двадцати любимых мотивов на окне последних постов и блокирует то, что превысило квоту: дежурные исторические параллели, фразы-кредо, жаргон, зачины «у окна», одинаковые концовки. Семья и здоровье не попадают в публичный канал. Военные метафоры и якоря проверяемой биографии переписываются. Запись в `tg_news.json` защищена файловой блокировкой (`state_io.py`). | `news_module/columnist.py`, `variety.py`, `typos.py`, `poetry.py` |
+| **Разбор подписчика** | Админ отправляет боту `/razbor <вопрос>`, получает превью готового поста с кнопками (опубликовать / другой дубль / отмена) и публикует его в канал в один тап. | `aristarkh_core/main.py` |
+| **Отвечает сам себе** | Треть постов получает отложенную «добивку»: через 20 минут — сутки он отвечает реплаем на собственный пост короткой мыслью вдогонку или самоиронией, как живой автор канала. | `followup_cron.py` |
+| **Говорит на вашем языке** | Отвечает на том языке, на котором пишет собеседник; кнопки меню, счета и системные сообщения переключаются по языку Telegram пользователя (русский или английский). | `prompts.py`, `i18n.py`, `locales/` |
+| **Человеческая пунктуация** | Детерминированная постобработка без расхода токенов: длинные тире «—» (главный маркер нейросетевого текста) заменяются на `-`, `=` или `:` — так, как реально печатают в мессенджере; при этом модельные `=` ограничены максимум одним на текст. | `humanize.py` |
+| **Теневой ассистент** | После каждого ответа второй агент подсказывает пользователю следующий сильный вопрос, опираясь на продюсерскую методологию. | `assistant.py` |
+| **Продакшн-детали** | Склейка пачек сообщений (debounce), «режим романа Толстого» для огромных текстов, чтение PDF/DOCX/XLSX/PPTX и картинок, бриф проекта (`/brief`), контроль `MAX_TOKENS` и незавершённых предложений для thinking-моделей (`16k` лимит с разделением мыслей и ответа), восстановление оборванного JSON, оплата в Telegram Stars, пошаговая аналитика событий. | `main.py`, `gemini.py`, `post_builder.py` |
+| **QA с LLM-судьёй** | Сквозной тестовый стенд общается с живым ботом через пользовательский аккаунт Telethon, а независимая модель оценивает устойчивость персоны, защиту от джейлбрейка, память и отработку повестки. | `qa/qa_runner.py` |
 
-## How one message flows
+## Как проходит одно сообщение
 
-1. **Input shaping.** Messages sent within 2.5 s are merged into one thought; huge texts switch to accumulation mode.
-2. **Affect.** Fatigue +5; current trust, fatigue and mood are loaded.
-3. **Router.** A Flash model returns `{"needs_search": bool, "query": str}`; if needed, a grounded search collects fresh facts.
-4. **Recall.** Knowledge, episodic and semantic memory are fetched in parallel.
-5. **Situation.** Time since the last message, where he is right now, whether he may mention it, the thesis of the day, core beliefs.
-6. **Inner monologue.** Pro model, private, in XML.
-7. **Reply.** Pro model acts on the plan under persona, provenance and messenger-realism rules — or returns `[IGNORE]`.
-8. **Afterwards.** Every 5 turns an extractor distills facts, a summary, Δtrust and mood into memory; the shadow assistant suggests a follow-up question.
+1. **Приём и склейка.** Сообщения, пришедшие с паузой до 2,5 с, собираются в одну реплику; длинные простыни включают режим накопления текста.
+2. **Аффект.** Усталость `+5`; из базы загружаются текущие `trust`, `fatigue` и `mood`.
+3. **Роутер.** Модель Flash возвращает `{"needs_search": bool, "query": str}`; если нужен интернет — выполняется поиск со свежими фактами.
+4. **Воспоминание.** Параллельно поднимаются фрагменты из базы знаний, эпизодической памяти и семантические факты о собеседнике.
+5. **Ситуация.** Сколько времени прошло с прошлой реплики, где Аристарх сейчас находится, уместно ли об этом упомянуть, тезис дня и ключевые убеждения.
+6. **Внутренний монолог.** Модель Pro формирует скрытый XML-план (`<THOUGHTS>` и `<STRATEGY>`).
+7. **Ответ.** Модель Pro отыгрывает план с учётом правил персоны, происхождения знаний и реализма мессенджера — либо возвращает `[IGNORE]`. Финальный фильтр (`reply_guard.py`) проверяет текст перед отправкой.
+8. **После ответа.** Каждые 5 реплик экстрактор выжимает новые факты, саммари, `Δtrust` и `mood` в память, а теневой ассистент предлагает следующий вопрос.
 
-## Use cases: take it as is or fork it
+## Как можно использовать: как есть или форком
 
-| You want… | What to change | Effort |
+| Хотите… | Что поменять | Объём |
 |---|---|---|
-| **An expert persona for your brand** (coach, lawyer, doctor, chef) | Replace the biography and rules in `prompts.py` / `prompts/system_prompt_*.txt`, put your course or articles into `knowledge_base/` | an evening |
-| **A mentor bot trained on your course** | Drop your lecture transcripts in, keep the provenance rules so the bot speaks *about* the methodology instead of pretending it lived your stories | an evening |
-| **A paid consultation bot** | Keep Telegram Stars packages and promo codes, tune prices in `main.py` | minutes |
-| **An autonomous Telegram channel with a voice** | Point `news_module/tg_news.py` to your source channels, rewrite the persona and post formats in `post_builder.py` | an evening |
-| **A character companion / game NPC** | Keep the cognitive loop, affect and memory; replace the producer life schedule in `context_simulator.py` with your character's day | a weekend |
-| **A research testbed for affective agents** | Log-rich pipeline: every inner monologue, affective update and memory write is stored — compare prompting strategies on real conversations | ready |
-| **A QA harness for any persona bot** | Reuse `qa/qa_runner.py`: Telethon drives the real bot, an LLM judge scores the answers | an evening |
+| **Экспертную персону для своего бренда** (коуч, юрист, врач, шеф-повар) | Заменить биографию и правила в `prompts.py` / `prompts/system_prompt_*.txt`, положить свои курсы и статьи в `knowledge_base/` | вечер |
+| **Бота-наставника по своему курсу** | Загрузить расшифровки лекций; правила происхождения знаний заставят бота говорить *по* вашей методологии, а не выдавать ваши личные истории за свои | вечер |
+| **Платного бота-консультанта** | Пакеты Telegram Stars и промокоды уже встроены, достаточно настроить тарифы в `main.py` | минуты |
+| **Автономный Telegram-канал с характером** | Указать свои каналы-источники в `news_module/tg_news.py`, прописать персону и форматы в `post_builder.py` и `persona_private/` | вечер |
+| **Персонажа-компаньона или NPC для игры** | Оставить когнитивный цикл, эмоции и память, заменить продюсерский распорядок дня в `context_simulator.py` | выходные |
+| **Исследовательский стенд аффективных агентов** | Логируется всё: каждый внутренний монолог, сдвиг состояния и запись в память — можно сравнивать стратегии промптинга на живых диалогах | готово |
+| **QA-стенд для любого персонажного бота** | Переиспользовать `qa/qa_runner.py`: Telethon ведёт диалог с живым ботом, LLM-судья выставляет оценки | вечер |
 
-## Quick start
+## Быстрый старт
 
 ```bash
 git clone https://github.com/alex-princeps/ai_producer.git && cd ai_producer
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 cp template.env .env             # TELEGRAM_TOKEN, GEMINI_API_KEY, ADMIN_ID, ...
-# knowledge_base/demo/ ships with the repo; add your files next to it (.pdf .docx .txt .md)
+# демо-база knowledge_base/demo/ уже в репозитории; положите рядом свои файлы (.pdf .docx .txt .md)
 PYTHONPATH=. python aristarkh_core/main.py
 ```
 
-Aristarkh lives in Moscow: his daily schedule uses Europe/Moscow, so run cron in that timezone or change it.
+Аристарх живёт по московскому времени (`Europe/Moscow`), поэтому задачи в `cron` рассчитаны на этот часовой пояс:
 
 ```cron
-0 2 * * *   cd aristarkh_core && PYTHONPATH=.. python worker_cron.py          # sleep, reflection, Sunday evolution
-30 10,18 * * *   cd news_module && PYTHONPATH=.. python tg_news.py           # newsroom
-35 10,18 * * *   cd news_module && PYTHONPATH=.. python publisher_cron.py    # columnist
-50 * * * *  cd news_module && PYTHONPATH=.. python followup_cron.py           # replies to his own posts
+0 2 * * *        cd aristarkh_core && PYTHONPATH=.. python worker_cron.py       # сон, рефлексия, по воскресеньям эволюция убеждений
+30 10,18 * * *   cd news_module && PYTHONPATH=.. python tg_news.py              # сбор новостей и выбор темы (редактор + куратор)
+35 10,18 * * *   cd news_module && PYTHONPATH=.. python publisher_cron.py       # генерация и публикация колонки
+50 * * * *       cd news_module && PYTHONPATH=.. python followup_cron.py        # отложенные реплаи к собственным постам
 ```
 
-`python news_module/publisher_cron.py --dry-run [--format twist]` writes a post without publishing it. How to plug in your own knowledge: [knowledge_base/README.md](knowledge_base/README.md).
+Команда `python news_module/publisher_cron.py --dry-run [--format twist]` сгенерирует и проверит пост в консоли без публикации в канал. Подробнее о подключении своей базы знаний — в [knowledge_base/README.md](knowledge_base/README.md).
 
-## Project structure
+## Структура проекта
 
 ```
-aristarkh_core/   main.py (bot + cognitive loop) · gemini.py (LLM calls) · prompts.py (persona)
-                  rag_chroma.py (knowledge + episodic memory) · semantic_memory.py · database.py
+aristarkh_core/   main.py (бот + когнитивный цикл) · gemini.py (вызовы LLM) · prompts.py (персона)
+                  rag_chroma.py (знания + эпизодическая память) · semantic_memory.py · database.py
                   context_simulator.py · morning_routine.py · worker_cron.py · evolution_engine.py
-                  assistant.py (shadow assistant, memory extractor, nightly reflection)
-                  humanize.py (punctuation that doesn't scream "AI")
-news_module/      tg_news.py (newsroom) · post_builder.py (columnist) · publisher_cron.py · followup_cron.py
-knowledge_base/   demo/ (original MIT corpus) · README.md (bring your own knowledge)
-qa/               qa_runner.py (end-to-end suite with LLM-as-a-Judge)
-tools/            research_rag.py (RAG over research papers)
-locales/          UI strings (en, ru), picked per user
-docs/             architecture.svg · knowledge-pipeline.svg · RESEARCH.md (annotated reading list)
+                  assistant.py (теневой ассистент, экстрактор памяти, ночная рефлексия)
+                  reply_guard.py (финальный фильтр ответа) · humanize.py (живая пунктуация)
+news_module/      tg_news.py (сбор ленты) · curator.py (Ари-куратор) · post_builder.py (колумнист)
+                  columnist.py (настроение дня, погода) · variety.py (квоты мотивов)
+                  poetry.py (точные цитаты стихов) · typos.py (опечатки с правкой)
+                  publisher_cron.py · followup_cron.py · state_io.py (атомарное хранение)
+knowledge_base/   demo/ (оригинальный MIT-корпус) · README.md (инструкция по базе знаний)
+qa/               qa_runner.py (сквозной набор тестов с LLM-as-a-Judge)
+tools/            research_rag.py (поиск по корпусу научных статей)
+locales/          строки интерфейса (ru, en), выбираются по языку пользователя
+docs/             architecture.svg · knowledge-pipeline.svg · RESEARCH.md (аннотированный список статей)
 ```
 
-## What's next: Aristarkh 2.0
+## Что дальше: Аристарх 2.0
 
-Version 1.0 is a persona engine. Version 2.0, in development, is a **cognitive architecture** built to be indistinguishable from a person in a messenger:
+Версия 1.0 — движок персоны. Версия 2.0 (в разработке) — полноценная **когнитивная архитектура**, цель которой — неотличимость от живого человека в мессенджере на длинной дистанции:
 
-- OCC-based appraisal → emotions → mood → temperament, instead of three counters;
-- seven memory layers with a **canon registry**: everything he ever said about himself is checked for contradictions *before* sending;
-- a simulated daily life with plans, events, story arcs and a diary, identical for every person he talks to;
-- one person with one life, but a separate relationship with each interlocutor;
-- a test range of LLM-driven interlocutors with hidden goals and a calibrated LLM judge.
+- эмоции по когнитивной модели OCC: оценка события (appraisal) → эмоция → настроение → темперамент вместо трёх счётчиков;
+- семь слоёв памяти и **реестр канона**: всё, что персонаж когда-либо сказал о себе, проверяется на противоречия *до отправки*;
+- симулированная жизнь с планом дня, событиями, сюжетными арками и дневником, единая для всех собеседников;
+- один человек с одной биографией и одним днём, но отдельные отношения с каждым собеседником;
+- испытательный полигон из LLM-собеседников со скрытыми целями и откалиброванный LLM-судья.
 
-## Research foundations
+## Научный фундамент
 
-Built on generative agents, persona consistency, theory of mind, appraisal-based emotion and agent memory research. Highlights:
+Проект опирается на исследования в области генеративных агентов, устойчивости персоны, модели психики (Theory of Mind), когнитивных теорий эмоций и долгосрочной памяти агентов. Ключевые работы:
 
-- Park et al. — *Generative Agents* ([arXiv:2304.03442](https://arxiv.org/abs/2304.03442)): memory scoring and daily plans
-- Kim et al. — *PICON* ([arXiv:2603.25620](https://arxiv.org/abs/2603.25620)): surviving interrogation about one's past
-- Zhou et al. — *SOTOPIA* ([arXiv:2310.11667](https://arxiv.org/abs/2310.11667)): testers with hidden goals
-- Croissant et al. — *Chain-of-Emotion* ([arXiv:2309.05076](https://arxiv.org/abs/2309.05076)): appraise first, feel second, speak third
-- Amanlou et al. — *PsychoAgent* ([arXiv:2608.07438](https://arxiv.org/abs/2608.07438)): memories that remember how things felt
-- Vezhnevets et al. — *Concordia* ([arXiv:2312.03664](https://arxiv.org/abs/2312.03664)): simulating a whole life around a character
+- Park et al. — *Generative Agents* ([arXiv:2304.03442](https://arxiv.org/abs/2304.03442)): скоринг воспоминаний и суточное планирование
+- Kim et al. — *PICON* ([arXiv:2603.25620](https://arxiv.org/abs/2603.25620)): проверка биографии многоходовым «допросом»
+- Zhou et al. — *SOTOPIA* ([arXiv:2310.11667](https://arxiv.org/abs/2310.11667)): социальная оценка агентов со скрытыми целями
+- Croissant et al. — *Chain-of-Emotion* ([arXiv:2309.05076](https://arxiv.org/abs/2309.05076)): сначала оценка ситуации, затем чувство, затем реплика
+- Amanlou et al. — *PsychoAgent* ([arXiv:2608.07438](https://arxiv.org/abs/2608.07438)): память, которая помнит эмоциональный след событий
+- Vezhnevets et al. — *Concordia* ([arXiv:2312.03664](https://arxiv.org/abs/2312.03664)): симуляция жизненной среды вокруг персонажа через Game Master
 
-📚 **Full annotated reading list, 40 papers with "why Aristarkh cares": [docs/RESEARCH.md](docs/RESEARCH.md)**
+📚 **Полный аннотированный список литературы (40 статей с пояснением «зачем это Аристарху»): [docs/RESEARCH.md](docs/RESEARCH.md)**
 
-## Author
+## Автор
 
-**Alexander Sokolov** — cognitive architectures and AI personas.
+**Александр Соколов** — когнитивные архитектуры и ИИ-личности.
 
 - ✉️ [sokolov.alexander.v@gmail.com](mailto:sokolov.alexander.v@gmail.com)
 - 🌐 [myaistaff.tech](https://myaistaff.tech/)
 - 💼 [linkedin.com/in/alexprinceps](https://www.linkedin.com/in/alexprinceps)
 - ✈️ Telegram: [@alex_princeps](https://t.me/alex_princeps)
 
-## License
+## Лицензия
 
-[MIT](LICENSE) — fork it, ship it, give it a different personality. The demo knowledge base is original and MIT-licensed too; bring only content you have the right to use.
+[MIT](LICENSE) — делайте форк, запускайте в продакшн, создавайте собственных персонажей. Демонстрационная база знаний также написана с нуля и распространяется под лицензией MIT; загружайте в свою базу только те материалы, на использование которых у вас есть права.

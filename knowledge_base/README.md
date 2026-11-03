@@ -1,46 +1,46 @@
-# Knowledge base: bring your own brain
+# База знаний: подключите свои материалы
 
-![Knowledge pipeline](../docs/knowledge-pipeline.svg)
+![Конвейер базы знаний](../docs/knowledge-pipeline.svg)
 
-Aristarkh without a knowledge base is a very confident man with no receipts. Give him your lectures, playbooks and war stories, and he starts talking like someone who has spent 25 years in the control room, without quoting your PDFs like a student defending a thesis.
+Аристарх без базы знаний — это очень уверенный в себе мужчина без единого пруфа. Дайте ему свои лекции, методички и рабочие байки — и он заговорит как человек, который провёл 25 лет в аппаратной, не цитируя ваши PDF-файлы как студент на защите диплома.
 
-## TL;DR
+## Коротко (TL;DR)
 
 ```bash
 cp -r my_course_transcripts/ knowledge_base/my_stuff/   # .pdf .docx .txt .md
-rm -rf aristarkh_core/chroma_db                         # only if you re-index an existing bot
-PYTHONPATH=. python aristarkh_core/main.py              # indexes on first start, then just runs
+rm -rf aristarkh_core/chroma_db                         # только если переиндексируете уже работавшего бота
+PYTHONPATH=. python aristarkh_core/main.py              # проиндексирует при первом старте и сразу запустится
 ```
 
-Custom location: set `KNOWLEDGE_DIR=/abs/path/to/folder` in `.env`.
+Свой путь к папке можно задать через переменную `KNOWLEDGE_DIR=/abs/path/to/folder` в `.env`.
 
-## What ships in this repo
+## Что лежит в репозитории
 
-`knowledge_base/demo/` is a tiny, original, MIT-licensed corpus. It is enough to see the mechanics, not enough to run a TV channel.
+В папке `knowledge_base/demo/` собран небольшой оригинальный корпус под лицензией MIT. Его достаточно, чтобы увидеть механику в деле, но недостаточно, чтобы запустить федеральный телеканал.
 
-| File | Type | What it teaches the persona |
+| Файл | Тип | Чему учит персонажа |
 |---|---|---|
-| `01_the_12_second_rule.md` | methodology | retention: something must happen every 12 seconds |
-| `02_conflict_is_the_engine.md` | methodology | "who are we against?" and casting collisions |
-| `03_money_talks.md` | methodology | the monetization ladder, from lead magnet to high ticket |
-| `04_casting_archetypes.md` | methodology | the six roles every unscripted cast needs |
-| `05_colleague_story_the_burnt_pilot.md` | **someone else's first-person story** | provenance: retell as "a colleague once told me…", never as "I" |
+| `01_the_12_second_rule.md` | методология | удержание внимания: каждые 12 секунд в кадре или тексте должно что-то происходить |
+| `02_conflict_is_the_engine.md` | методология | принцип «против кого дружим?» и столкновение типажей в кастинге |
+| `03_money_talks.md` | методология | лестница монетизации: от лид-магнита до дорогого продукта |
+| `04_casting_archetypes.md` | методология | шесть ролей, без которых не работает ни одно реалити-шоу |
+| `05_colleague_story_the_burnt_pilot.md` | **чужая история от первого лица** | проверка авторства: пересказывать как «коллега рассказывал…», никогда не от своего «я» |
 
-## How it works (no magic, some craft)
+## Как это устроено (никакой магии, чистое ремесло)
 
-1. **Split like an editor.** A recursive splitter cuts by paragraph, then sentence, then word: 1200 characters with 200 of overlap. Thoughts stay whole instead of ending mid-sentence.
-2. **Stamp every chunk.** `[SOURCE: file name]` is glued to each piece before embedding, so retrieval brings back *who* said it, not just *what*.
-3. **Embed once.** `gemini-embedding-001`, batched and gentle with rate limits; the index lives in ChromaDB (`aristarkh_knowledge`) and is not rebuilt on every restart.
-4. **Recall on demand.** Chat replies pull the top 5 chunks, channel posts the top 3. Only one post format, "Story", is allowed to retell an anecdote.
-5. **Respect provenance.** The prompt rules turn methodology into the persona's own expertise ("here's how this works"), but someone else's first-person stories stay someone else's ("a colleague once told me…"). Breaking the fourth wall ("according to my knowledge base") is forbidden.
+1. **Нарезка как у монтажёра.** Рекурсивный сплиттер режет сначала по абзацам, затем по предложениям и словам: куски по 1200 символов с нахлёстом 200 символов. Мысли остаются целыми, а не обрываются на полуслове.
+2. **Штамп источника на каждом куске.** Перед расчётом эмбеддинга к каждому фрагменту приклеивается заголовок `[SOURCE: имя файла]`, поэтому при поиске в промпт возвращается не только *что* сказано, но и *чей* это материал.
+3. **Индексация один раз.** Эмбеддинги `gemini-embedding-001` считаются батчами с бережным отношением к лимитам API; индекс сохраняется на диске в ChromaDB (`aristarkh_knowledge`) и не пересобирается при каждом перезапуске.
+4. **Воспоминание по запросу.** В диалоге с пользователем подтягиваются топ-5 фрагментов, при написании поста в канал — топ-3. Пересказывать байку из базы разрешено только одному формату поста («История»).
+5. **Уважение к авторству (provenance).** Правила промпта превращают методологию в собственную экспертизу персонажа («смотри, как это работает»), но чужие истории от первого лица остаются чужими («коллега как-то рассказывал…»). Ломать четвёртую стену фразами вроде «согласно моей базе знаний» строго запрещено.
 
-## Tips from people who learned the hard way
+## Советы из набитых шишек
 
-- **Curate, don't hoard.** 50 great pages beat 5,000 mediocre ones. Retrieval can't fix a boring corpus; it just finds boredom faster.
-- **Name files like headlines.** The file name becomes the source stamp. `lecture_final_v3_REAL.pdf` teaches the model nothing.
-- **Separate methodology from anecdotes.** Put first-person stories in their own files, and say in the first lines whose story it is.
-- **Only use what you have the right to use.** Paid courses and other people's books do not become yours because they fit in a vector DB. Your lawyer and your reputation will thank you.
+- **Отбирайте лучшее, не сваливайте всё в кучу.** 50 сильных страниц работают лучше, чем 5000 водянистых. Векторный поиск не спасёт скучный корпус — он просто быстрее найдёт скуку.
+- **Называйте файлы осмысленно.** Имя файла попадает в штамп `[SOURCE: ...]`. Файл `lekciya_final_v3_TOCHNO.pdf` ничего не объяснит модели.
+- **Отделяйте методологию от личных баек.** Выносите истории от первого лица в отдельные файлы и в первых строках явно указывайте, чей это кейс.
+- **Используйте только то, на что у вас есть права.** Платные курсы и чужие книги не становятся вашими от того, что поместились в векторную базу.
 
-## Roadmap (Aristarkh 2.0)
+## Что дальше (Аристарх 2.0)
 
-In 2.0 provenance moves from prompt rules into the data. Every chunk carries a `source_type` (`method`, `story`, `style`, `own_research`, `world_method`, `news`), stories are detected and tagged at ingestion, and retrieval is hybrid: vector search plus full-text search, fused with RRF.
+В версии 2.0 контроль происхождения знаний переезжает из правил промпта в структуру данных. Каждый фрагмент получает метаданные `source_type` (`method`, `story`, `style`, `own_research`, `world_method`, `news`), истории от первого лица размечаются при загрузке, а поиск становится гибридным: векторная близость + полнотекстовый поиск со слиянием рангов (RRF).
