@@ -141,13 +141,23 @@ def _near(line: list[str], post: list[str]) -> bool:
     return False
 
 
+def _is_line_prefix(line: list[str], post: list[str], min_words: int = 2) -> bool:
+    """Оборванное начало строки стиха (например, «Поверил / Я» вместо «Поверил / Я алгеброй гармонию»)."""
+    if "|" in post or not (min_words <= len(post) <= len(line)) or post == line:
+        return False
+    if post[:-1] != line[: len(post) - 1]:
+        return False
+    last_p, last_l = post[-1], line[len(post) - 1]
+    return (last_p == last_l and len(post) < len(line)) or (len(last_p) >= 2 and last_l.startswith(last_p))
+
+
 def check(text: str, entries: list[dict], near_entries: list[dict] | None = None) -> tuple[str, dict | None]:
     """
     Цитата из стихов в тексте: ("ok", фрагмент), ("misquote", фрагмент) или ("absent", None).
     - ok: хотя бы одна строка фрагмента из entries стоит в тексте дословно (регистр, ё и пунктуация не важны).
     - misquote: строка фрагмента из near_entries (по умолчанию entries) почти есть в стихоподобной строке поста
       (не длиннее строки стиха больше чем на три слова): по порядку совпали все слова, кроме одного,
-      или слово стоит в другой форме («на расстоянии» вместо «на расстояньи»).
+      или слово стоит в другой форме («на расстоянии» вместо «на расстояньи»), либо строка стиха оборвана.
       Дословные строки перед этой проверкой вырезаются, чтобы точная цитата одного стиха
       не выглядела неточной цитатой другого.
     """
@@ -170,10 +180,23 @@ def check(text: str, entries: list[dict], near_entries: list[dict] | None = None
                     post[i:i + len(line)] = ["|"]
                     i = _find(post, line)
         masked.append(post)
+    # Проверка на обрыв следующей строки стиха сразу после дословной (даже из одного слова, как «Поверил\nЯ» в №197)
+    if found:
+        flines = _lines(found)
+        for idx, line in enumerate(flines[:-1]):
+            next_line = flines[idx + 1]
+            for p_idx, post in enumerate(posts[:-1]):
+                if _find(post, line) >= 0 and _is_line_prefix(next_line, masked[p_idx + 1], min_words=1):
+                    return "misquote", found
     # Неточность ищется только в стихоподобных строках: отдельная короткая строка или текст в «ёлочках».
     # Длинная фраза прозы с тремя словами из стиха («Не каждому дано держать сериал...») - аллюзия, а не цитата
     for entry in near_entries:
-        if any(_near(line, post) for line in _lines(entry) for post in masked if len(post) <= len(line) + 3):
+        if any(
+            _near(line, post) or _is_line_prefix(line, post, min_words=2)
+            for line in _lines(entry)
+            for post in masked
+            if len(post) <= len(line) + 3
+        ):
             return "misquote", entry
     return ("ok", found) if found else ("absent", None)
 

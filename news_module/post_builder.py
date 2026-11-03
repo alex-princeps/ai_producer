@@ -545,14 +545,41 @@ def _drop_rubrics(text: str) -> str:
     return RUBRIC_RE.sub(lambda m: m.group(1).upper(), text)
 
 
+COMPLETE_END_RE = re.compile(r'[.!?…][»"\')\]]*\s*$')
+TRUNCATED_FIX = (
+    "текст оборван на полуслове или незаконченной фразе: допиши мысль до конца "
+    "и закончи полным предложением с точкой"
+)
+
+
+def is_truncated(text: str) -> bool:
+    """Оборван ли текст на полуслове или незаконченной фразе (посты №191, №197)."""
+    s = (text or "").strip()
+    if not s:
+        return True
+    if COMPLETE_END_RE.search(s):
+        return False
+    # Редкий случай: пост заканчивается полной финальной строкой фрагмента из банка стихов,
+    # где у классика в конце стоит «;», «:» или «,» (Онегин, Лермонтов)
+    last_line = poetry.norm(s.splitlines()[-1])
+    if last_line:
+        for entry in poetry.load_bank():
+            lines = poetry._lines(entry)
+            if lines and last_line == " ".join(lines[-1]):
+                return False
+    return True
+
+
 async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_problems: list[str] | None = None,
                   banned: list[str] | None = None, allow_hobby: bool = False) -> str:
     """
-    Проверки после генерации: клише, выдуманные знакомства с реальными людьми, рубрики-метки вроде «Вывод:».
-    Если что-то не так - один проход переписывания. Выдуманное знакомство, пережившее переписывание,
-    останавливает публикацию; оставшаяся метка вырезается.
+    Проверки после генерации: клише, выдуманные знакомства с реальными людьми, рубрики-метки вроде «Вывод:»,
+    обрыв на полуслове. Если что-то не так - один проход переписывания. Выдуманное знакомство, личное,
+    проверяемые приметы биографии или оборванный текст, пережившие переписывание, останавливают публикацию.
     """
     problems = find_cliches(text) + list(extra_problems or [])
+    if is_truncated(text):
+        problems.append(TRUNCATED_FIX)
     if find_contact_claims(text):
         problems.append(CONTACT_FIX)
     if RUBRIC_RE.search(text):
@@ -571,7 +598,13 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
         )
         rewritten = (await llm.generate_standalone(system_prompt, rewrite_prompt)).replace("*", "").strip()
         if rewritten and not rewritten.startswith(("⛔️", "⚠️")):
-            text = rewritten
+            if is_truncated(rewritten) and not is_truncated(text):
+                logger.warning("⚠️ [Post] Переписанный вариант оборван, пробуем переписать ещё раз...")
+                rewritten2 = (await llm.generate_standalone(system_prompt, rewrite_prompt)).replace("*", "").strip()
+                if rewritten2 and not rewritten2.startswith(("⛔️", "⚠️")) and not is_truncated(rewritten2):
+                    text = rewritten2
+            else:
+                text = rewritten
         left = find_cliches(text)
         if left:
             logger.warning(f"⚠️ [Post] После переписывания остались клише: {left}")
@@ -591,6 +624,9 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
     if variety.has_bio_anchor(text):
         # Название своего журнала или точный год карьеры проверяется поиском: такой пост не публикуем
         raise ValueError("После переписывания осталась проверяемая примета биографии (название проекта или год)")
+    if is_truncated(text):
+        # Оборванный на полуслове пост никогда не публикуем в канал
+        raise ValueError(f"После переписывания текст остался оборванным: ...{text[-60:]!r}")
     # Тире внутри строк стиха - дефисом и до общей постобработки: она поставила бы туда «=» или «:»
     return humanize_punctuation(_drop_rubrics(poetry.verse_dashes(text, poetry.load_bank())))
 
@@ -923,12 +959,19 @@ async def generate_followup(llm, post: dict, minutes_since: int, recent_followup
     user_prompt = f"ТВОЙ ПОСТ:\n{post.get('text', '').strip()}"
     text = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(text)
-    if find_cliches(text) or find_contact_claims(text) or find_military(text) or variety.violations(text, motifs):
+    if (
+        find_cliches(text)
+        or find_contact_claims(text)
+        or find_military(text)
+        or variety.violations(text, motifs)
+        or is_truncated(text)
+    ):
         text = (await llm.generate_standalone(
             system_prompt,
             user_prompt + "\n\nЧЕРНОВИК ДОБИВКИ:\n" + text
-            + "\n\nПерепиши без запрещённых оборотов, без военных метафор, без повторов из своего поста, без семьи и здоровья, "
-              "без выдуманного личного знакомства с реальными людьми и без названий своих прошлых проектов и точных лет своей карьеры.",
+            + "\n\nПерепиши полным завершённым предложением без запрещённых оборотов, без военных метафор, "
+              "без повторов из своего поста, без семьи и здоровья, без выдуманного личного знакомства "
+              "с реальными людьми и без названий своих прошлых проектов и точных лет своей карьеры.",
         )).replace("*", "").strip()
         _ensure_generated(text)
         if find_contact_claims(text):
@@ -937,4 +980,6 @@ async def generate_followup(llm, post: dict, minutes_since: int, recent_followup
         raise ValueError("В добивке личное (семья или здоровье)")
     if variety.has_bio_anchor(text):
         raise ValueError("В добивке проверяемая примета биографии (название проекта или год)")
+    if is_truncated(text):
+        raise ValueError(f"В добивке оборванный текст: ...{text[-60:]!r}")
     return humanize_punctuation(text)

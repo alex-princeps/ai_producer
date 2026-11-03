@@ -266,7 +266,10 @@ class LLMService:
             "safetySettings": self.safety_settings,
             "generationConfig": {
                 "temperature": 0.8,
-                "maxOutputTokens": 4096
+                # gemini-3.1-pro — thinking-модель: maxOutputTokens расходуется и на скрытые рассуждения
+                # (thoughtsTokenCount), и на видимый текст. При 4096 сложные промпты съедали ~3950 токенов
+                # на мысли и обрывали пост на полуслове (посты №191, №197).
+                "maxOutputTokens": 16384
             }
         }
         
@@ -275,10 +278,25 @@ class LLMService:
             async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    text = self._parse_response(data)
                     usage = data.get("usageMetadata", {})
+                    candidates = data.get("candidates", [])
+                    finish_reason = candidates[0].get("finishReason") if candidates else None
+                    if finish_reason == "MAX_TOKENS":
+                        logger.warning(
+                            f"⚠️ [Standalone] Ответ оборван по лимиту токенов (MAX_TOKENS: "
+                            f"total={usage.get('totalTokenCount', 0)}, "
+                            f"thoughts={usage.get('thoughtsTokenCount', 0)}, "
+                            f"output={usage.get('candidatesTokenCount', 0)}). Идем на ретрай..."
+                        )
+                        raise ValueError("Standalone response truncated (finishReason=MAX_TOKENS)")
+                    text = self._parse_response(data)
                     if text:
-                        logger.info(f"📝 [Standalone] Сгенерирован пост для канала (Токенов: {usage.get('totalTokenCount', 0)})")
+                        logger.info(
+                            f"📝 [Standalone] Сгенерирован пост для канала "
+                            f"(Токенов: {usage.get('totalTokenCount', 0)}, "
+                            f"мысли: {usage.get('thoughtsTokenCount', 0)}, "
+                            f"текст: {usage.get('candidatesTokenCount', 0)})"
+                        )
                         return text
                     return "⛔️ Пустой ответ"
                 else:
@@ -305,7 +323,12 @@ class LLMService:
         try:
             async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
-                    edited = self._parse_response(await resp.json())
+                    data = await resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates and candidates[0].get("finishReason") == "MAX_TOKENS":
+                        logger.warning("⚠️ [Edit] Правка текста оборвана по MAX_TOKENS, пропускаем.")
+                        return None
+                    edited = self._parse_response(data)
                     if edited and not edited.startswith(("⛔️", "⚠️")):
                         return edited.strip()
                 else:
@@ -481,9 +504,16 @@ class LLMService:
         
         finish_reason = candidates[0].get('finishReason')
         if finish_reason == 'SAFETY': return "⛔️ Цензура Google заблокировала этот ответ."
+        if finish_reason == 'MAX_TOKENS':
+            usage = raw_response.get("usageMetadata", {})
+            logger.warning(
+                f"⚠️ [Gemini] Ответ обрезан по лимиту токенов (MAX_TOKENS: "
+                f"total={usage.get('totalTokenCount', 0)}, thoughts={usage.get('thoughtsTokenCount', 0)}, "
+                f"output={usage.get('candidatesTokenCount', 0)})"
+            )
         
         parts = candidates[0].get('content', {}).get('parts', [])
-        full_text = self._clean_html("\n".join([p.get('text', '') for p in parts]))
+        full_text = self._clean_html("\n".join([p.get('text', '') for p in parts if not p.get('thought')]))
         
         grounding = candidates[0].get('groundingMetadata')
         if grounding and grounding.get('searchEntryPoint'): 
