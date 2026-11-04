@@ -42,16 +42,12 @@ JSON_FILENAME = os.path.join(BASE_DIR, "tg_news.json")
 
 def get_schedule_config() -> tuple[int, str]:
     """
-    Определяет глубину парсинга в зависимости от времени запуска.
+    Определяет глубину парсинга: сбор новостей 1 раз в день за последние 24 часа.
     
     Returns:
         tuple: (часы для парсинга, контекст запуска)
     """
-    # Два запуска в день (10:30 и 18:30 по Москве): утром — всё с прошлого вечера, вечером — с утра
-    current_hour = datetime.now().hour
-    if current_hour < 14:
-        return 16, "Утренний сбор"
-    return 8, "Вечерний сбор"
+    return 24, "Дневной сбор"
 
 
 def save_to_json(data: dict):

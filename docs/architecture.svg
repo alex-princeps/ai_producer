@@ -57,7 +57,7 @@
 
   <rect x="40" y="564" width="230" height="100" rx="14" class="card" stroke="#58a6ff"/>
   <text x="58" y="592" class="t">📣 Авторская колонка</text>
-  <text x="58" y="616" class="s">2 поста в день, ссылка +</text>
+  <text x="58" y="616" class="s">1 пост в день, ссылка +</text>
   <text x="58" y="634" class="s">свёрнутая цитата, 11 форматов</text>
 
   <!-- arrows from interface to pipeline -->
@@ -148,7 +148,7 @@
   <text x="62" y="794" class="s">«тезис дня» (сила 0–10)</text>
   <path d="M292 770 H322" class="life" marker-end="url(#arrowO)"/>
 
-  <text x="332" y="754" class="t">📰 Редакция и куратор ×2</text>
+  <text x="332" y="754" class="t">📰 Редакция и куратор</text>
   <text x="332" y="776" class="s">Telegram-каналы → шорт-лист → Ари сам</text>
   <text x="332" y="794" class="s">оценивает 0–10 и выбирает зацепку</text>
   <path d="M632 770 H662" class="life" marker-end="url(#arrowO)"/>

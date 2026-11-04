@@ -30,7 +30,7 @@ def _env_float(name: str, default: float = 0.0) -> float:
         return default
 
 
-# Ритм живого автора: разброс времени публикации и личная заметка воскресным вечером (по умолчанию выключены)
+# Ритм живого автора: разброс времени публикации и личная заметка по воскресеньям (по умолчанию выключены)
 PUBLISH_JITTER_MIN = _env_float("PUBLISH_JITTER_MIN")
 PERSONAL_SUNDAY_PROB = _env_float("PERSONAL_SUNDAY_PROB")
 # Редкая опечатка, которую автор через несколько минут правит редактированием поста (по умолчанию выключена)
@@ -72,7 +72,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     Автономный воркер для публикации постов в канал из TG_CHANNEL_ID.
 
     Пайплайн:
-    1. Решает, что сегодня в этот слот: обычный пост, личная заметка (воскресный вечер) или пропуск
+    1. Решает, что сегодня в этот слот: обычный пост, личная заметка (воскресенье) или пропуск
     2. Читает свежую новость из tg_news.json (результат работы tg_news.py) и проверяет, не была ли она опубликована
     3. Ждёт случайные 0..PUBLISH_JITTER_MIN минут, чтобы посты не выходили минута в минуту
     4. Генерирует пост через news_module/post_builder.py: формат, настроение и сцена дня, память о своих постах,
@@ -120,7 +120,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
         if random.random() < columnist.skip_probability(day, slot):
             logger.info(f"🛋️ [Publisher] Сегодня не пишется (настроение «{day['mood']}»): слот пропущен.")
             return
-        personal = slot == "evening" and now.weekday() == 6 and random.random() < PERSONAL_SUNDAY_PROB
+        personal = now.weekday() == 6 and random.random() < PERSONAL_SUNDAY_PROB
 
     digest = news_data.get("current_digest", {})
     # Куратор: Ари сам выбирает из свежего короткого списка (NEWS_CURATOR=on). Список старше 6 часов не берём.

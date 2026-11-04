@@ -263,7 +263,7 @@ def skip_probability(day: dict, slot: str) -> float:
         base = float(os.getenv("SKIP_PROB_WEEKEND" if weekend else "SKIP_PROB_WEEKDAY", "0") or 0)
     except ValueError:
         base = 0.0
-    return max(base, day.get("skip_evening", 0.0)) if slot == "evening" else base
+    return max(base, day.get("skip_evening", 0.0))
 
 
 def recent_posts_block(history: list[dict], callback_allowed: bool, n: int = 6) -> str:
