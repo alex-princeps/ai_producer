@@ -377,10 +377,10 @@ def build_system_prompt(
         )
     elif rag_context:
         knowledge = (
-            "[ПРОФЕССИОНАЛЬНАЯ БАЗА ЗНАНИЙ - ТОЛЬКО ДЛЯ ФОНА]\n"
+            "[СПРАВКА: ЧУЖИЕ ИНДУСТРИАЛЬНЫЕ КЕЙСЫ И МЕТОДОЛОГИЯ — НЕ ТВОЯ БИОГРАФИЯ]\n"
             f"{rag_context}\n\n"
-            "В этом формате НЕ пересказывай истории из базы. Используй её только как свою профессиональную "
-            "насмотренность: принципы, механику форматов, цифры."
+            "В этом формате НЕ пересказывай истории из справки. Рассказчик в ней — другой продюсер; "
+            "используй только общие принципы и механику форматов, а реальные чужие шоу упоминай строго в третьем лице."
         )
     else:
         knowledge = ""
@@ -489,8 +489,8 @@ def _body_html(text: str, cta: str | None) -> str:
     return html.escape(text.strip()) + (f"\n\n<i>{html.escape(cta)}</i>" if cta else "")
 
 
-def render_post_html(comment: str, news: dict, cta: str | None = None, question: str | None = None) -> str:
-    """Шапка со ссылкой и свёрнутой цитатой + вопрос продюсеру + сам комментарий (HTML для Telegram)."""
+def render_post_html(comment: str, news: dict, cta: str | None = None) -> str:
+    """Шапка со ссылкой и свёрнутой цитатой + сам комментарий (HTML для Telegram)."""
     url = news.get("url") or extract_url(news.get("content", ""))
     channel = news.get("channel")
     # Старый формат новости (до выбора по номеру): «суть + URL: ссылка» - чистим хвост
@@ -501,10 +501,6 @@ def render_post_html(comment: str, news: dict, cta: str | None = None, question:
     if url:
         label = f"Новость · @{channel}" if channel else "Новость"
         header.append(f'🔗 <a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
-    
-    q_block = []
-    if question:
-        q_block.append(f"💬 <b>Вопрос продюсеру:</b>\n<i>«{html.escape(question.strip())}»</i>")
 
     body = _body_html(comment, cta)
 
@@ -512,8 +508,8 @@ def render_post_html(comment: str, news: dict, cta: str | None = None, question:
     while True:
         quote = html.escape(_trim(quote_src, quote_limit)) if quote_src else ""
         # Свёрнутая цитата: в ленте видно начало, остальное раскрывается по тапу
-        block = header + ([f"<blockquote expandable>{quote}</blockquote>"] if quote else []) + q_block
-        result = "\n\n".join(block) + ("\n\n" if block else "") + body
+        block = header + ([f"<blockquote expandable>{quote}</blockquote>"] if quote else [])
+        result = "\n".join(block) + ("\n\n" if block else "") + body
         if len(result) <= TELEGRAM_LIMIT or quote_limit <= 100:
             return result[:TELEGRAM_LIMIT]
         quote_limit -= 150
@@ -575,6 +571,31 @@ def is_truncated(text: str) -> bool:
     return True
 
 
+FOREIGN_IP_EDIT_INSTRUCTION = (
+    "Ты литературный редактор. В данном предложении автор случайно приписал себе чужой реальный телепроект "
+    "или телеканал (через «мы продаём», «мы снимаем», «наш проект», «у нас на Пятнице» и т.п.). "
+    "Замени ТОЛЬКО местоимение/глагол первого лица на отстранённое третье лицо («телевизионщики продают», "
+    "«коллеги снимают», «там продают», «продюсеры делают» и т.п.), сохранив все остальные слова, язвительный тон, "
+    "экспрессивную лексику и знаки препинания слово в слово. Верни ТОЛЬКО одно исправленное предложение без внешних кавычек."
+)
+
+
+async def _fix_foreign_ip(llm, text: str) -> str:
+    """Точечная микро-правка одного предложения дешёвой Flash-моделью без рерайта всего поста."""
+    bad_sentences = variety.find_foreign_ip_sentences(text)
+    if not bad_sentences:
+        return text
+    for sent in bad_sentences:
+        logger.warning(f"🔧 [Post] Точечная правка присвоения чужого шоу: {sent!r}")
+        fixed = await llm.edit_text(FOREIGN_IP_EDIT_INSTRUCTION, sent)
+        if fixed:
+            fixed_clean = fixed.strip().strip("\"'")
+            if fixed_clean and not variety.find_foreign_ip_sentences(fixed_clean):
+                text = text.replace(sent, fixed_clean, 1)
+                logger.info(f"✅ [Post] Предложение исправлено: {fixed_clean!r}")
+    return text
+
+
 async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_problems: list[str] | None = None,
                   banned: list[str] | None = None, allow_hobby: bool = False) -> str:
     """
@@ -582,6 +603,9 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
     обрыв на полуслове. Если что-то не так - один проход переписывания. Выдуманное знакомство, личное,
     проверяемые приметы биографии или оборванный текст, пережившие переписывание, останавливают публикацию.
     """
+    # Точечная замена 1-го лица на 3-е в одном предложении, если вдруг проскочило чужое шоу из RAG (без рерайта поста!)
+    text = await _fix_foreign_ip(llm, text)
+
     # Ослабление петли переписывания: даём модели право на дерзость с первого дубля.
     # Переписываем ТОЛЬКО критические проблемы: обрыв текста, выдумка знакомства под NDA, личное (семья/здоровье), метка-рубрика.
     # Стилистические шероховатости (метафоры, резкие слова) НЕ выхолащиваем рерайтом!
@@ -613,6 +637,7 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
                     text = rewritten2
             else:
                 text = rewritten
+        text = await _fix_foreign_ip(llm, text)
         left = find_cliches(text)
         if left:
             logger.warning(f"⚠️ [Post] После переписывания остались клише: {left}")
@@ -626,6 +651,9 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
     if claims:
         # Выдуманное знакомство с реальным человеком не публикуем: лучше пропустить слот
         raise ValueError(f"После переписывания осталось выдуманное знакомство: {claims}")
+    foreign_left = variety.find_foreign_ip_sentences(text)
+    if foreign_left:
+        raise ValueError(f"После точечной правки осталось присвоение чужого проекта: {foreign_left}")
     if variety.has_private(text):
         # Семья и здоровье в публичном канале: такой пост лучше не публиковать вовсе
         raise ValueError("После переписывания в тексте осталось личное (семья или здоровье)")
@@ -741,8 +769,10 @@ async def generate_post(
             "[ЧТО ТЕБЯ ЗАЦЕПИЛО В ЭТОЙ НОВОСТИ - это твой угол, от него и строй пост]\n" + hook_line.strip())
     if provocateur_question:
         angle_block += ("\n\n" if angle_block else "") + (
-            f"[КАВЕРЗНЫЙ ВОПРОС ОТ СПАРРИНГ-ПАРТНЁРА]:\n«{provocateur_question.strip()}»\n"
-            "Ответь на этот вопрос хлёстко, едко и цинично, препарируя изнанку новости как хам-профессионал!"
+            f"[СКРЫТЫЙ ОСТРЫЙ УГОЛ ДЛЯ РАЗБОРА (ЧИТАТЕЛЬ ЭТОГО ВОПРОСА НЕ ВИДИТ)]:\n«{provocateur_question.strip()}»\n"
+            "Используй эту злую оптику, чтобы хлёстко и цинично вскрыть изнанку самой новости как хам-профессионал. "
+            "Пиши прямой авторский монолог о новости: НЕ обращайся к автору скрытого вопроса («вы спрашиваете», «милейший»), "
+            "так как в канале над твоим текстом показана только сама новость."
         )
     optic_id, optic = pick_optic(history)
     system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook,
@@ -780,7 +810,7 @@ async def generate_post(
         "hook": hook_line, "return": bool(return_of), "provocateur_question": provocateur_question,
         "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
-    return render_post_html(comment, news, cta_line(cta_handle) if cta else None, question=provocateur_question), meta
+    return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta
 
 
 async def generate_personal(llm, history: list[dict], poetry_mode: bool | None = None) -> tuple[str, dict]:
@@ -860,9 +890,10 @@ async def generate_razbor(
     rag_ctx = await rag_service.search(question, top_k=3)
     beliefs_text = "\n".join(f"- {b}" for b in core_beliefs) if core_beliefs else "- нет"
     knowledge = (
-        "[ПРОФЕССИОНАЛЬНАЯ БАЗА ЗНАНИЙ - ТОЛЬКО ДЛЯ ФОНА]\n"
+        "[СПРАВКА: ЧУЖИЕ ИНДУСТРИАЛЬНЫЕ КЕЙСЫ И МЕТОДОЛОГИЯ — НЕ ТВОЯ БИОГРАФИЯ]\n"
         f"{rag_ctx}\n\n"
-        "Не пересказывай истории из базы. Используй её как свою насмотренность: принципы, механику форматов, цифры."
+        "Не пересказывай истории из справки. Рассказчик в ней — другой продюсер; используй принципы и механику, "
+        "а любые реальные чужие шоу упоминай строго со стороны в третьем лице."
     ) if rag_ctx else ""
     banned = ", ".join(f"«{p}»" for p in BANNED_PHRASES)
     persona = columnist.load_persona()
@@ -908,6 +939,8 @@ async def generate_razbor(
     return render_razbor_html(question, answer, tail), meta
 
 
+HALL_QUESTION_TITLE = "🎙 Вопрос из зрительного зала"
+
 HAM_PRODUCER_PROMPT = """
 Ты — Аристарх Градов. Тебе 55 лет. Легендарный телевизионный шоураннер, демиург-трикстер, акула медиабизнеса и циничный продюсер с Патриарших.
 По натуре ты сноб, эстет, интеллектуал и хам-профессионал. Твое хамство — это хирургический скальпель, снимающий фальшь, глянец и дешёвый пиар с медиа, шоу-бизнеса и людей.
@@ -918,36 +951,46 @@ HAM_PRODUCER_PROMPT = """
 2. Не бойся крепкого слова, если оно бьёт точно в цель. Никакой политкорректности и слащавости.
 3. Анатомия феномена: в любом вопросе или кринже вскрывай изнанку — где там деньги, против кого дружат, почему это хавает массовый зритель и какая продюсерская механика за этим стоит.
 4. Живой язык: образный, сочный, телевизионный жаргон и петербургская эстетская язвительность.
-5. Формат: цельный авторский текст, разбитый на живые абзацы. Без списков, без заголовков, без звёздочек markdown (*), без морализаторства.
-6. Длина ответа: 1400–2600 символов.
+5. Дистанция и NDA: свои собственные проекты ты никогда не раскрываешь (железный NDA), а любые реальные телешоу и каналы рынка препарируешь с холодной дистанции стороннего мэтра в третьем лице — никогда не говори о них «мы снимаем / мы продаём / у нас в эфире».
+6. Формат: цельный авторский текст, разбитый на живые абзацы. Без списков, без заголовков, без звёздочек markdown (*), без морализаторства.
+7. Длина ответа: 1400–2600 символов.
 """
+
+
+def render_vault_html(question: str, answer: str, cta: str | None = None) -> str:
+    """Рубрика «Вопрос из зрительного зала»: шапка и свёрнутая цитата визуально как у новости + ответ."""
+    q = html.escape(_trim(question.strip(), 1500))
+    head = f"<b>{HALL_QUESTION_TITLE}</b>\n<blockquote expandable>{q}</blockquote>\n\n"
+    return (head + _body_html(answer, cta))[:TELEGRAM_LIMIT]
 
 
 async def generate_vault_post(
     llm, rag_service, core_beliefs: list, topic_item: dict, cta_handle: str | None = None
 ) -> tuple[str, dict]:
     """
-    Рубрика «Вопрос продюсеру»: препарирование острой темы из золотого фонда Алекса.
+    Рубрика «Вопрос из зрительного зала»: препарирование острой темы из золотого фонда Алекса.
     Голос: чистый «Хам-профессионал» без анестезии на температуре 0.95.
     """
     question = topic_item.get("question", "").strip()
     rag_ctx = await rag_service.search(question, top_k=2, enhance=False) if rag_service else ""
     knowledge = (
-        f"\n\n[ТВОЯ ПРОФЕССИОНАЛЬНАЯ БАЗА ЗНАНИЙ ДЛЯ ФОНА]\n{rag_ctx}\n"
+        "\n\n[СПРАВКА: ЧУЖИЕ ИНДУСТРИАЛЬНЫЕ КЕЙСЫ И МЕТОДОЛОГИЯ]\n"
+        "(Рассказчик во фрагментах ниже — другой продюсер, не ты; его шоу и каналы — НЕ твоя биография.)\n"
+        f"{rag_ctx}\n"
     ) if rag_ctx else ""
 
     system_prompt = HAM_PRODUCER_PROMPT + knowledge
-    user_prompt = f"Вопрос от читателя / спарринг-партнёра:\n«{question}»\n\nДай свой ответ для авторского Telegram-канала."
+    user_prompt = (
+        f"Вопрос из зрительного зала от читателя канала:\n«{question}»\n\n"
+        "Дай свой ответ для авторского Telegram-канала (сам вопрос не пересказывай — он уже показан в цитате над ответом)."
+    )
 
     answer = (await llm.generate_standalone(system_prompt, user_prompt, temp=0.95)).replace("*", "").strip()
     _ensure_generated(answer)
     answer = await _polish(llm, system_prompt, user_prompt, answer)
 
-    html_post = (
-        f"💬 <b>Вопрос продюсеру:</b>\n"
-        f"<i>«{html.escape(question)}»</i>\n\n"
-        f"{html.escape(answer)}"
-    )
+    tail = cta_line(cta_handle) if cta_handle else None
+    html_post = render_vault_html(question, answer, tail)
     meta = {
         "format": "vault_question",
         "topic_id": topic_item.get("id"),
@@ -1025,6 +1068,7 @@ async def generate_followup(llm, post: dict, minutes_since: int, recent_followup
     user_prompt = f"ТВОЙ ПОСТ:\n{post.get('text', '').strip()}"
     text = (await llm.generate_standalone(system_prompt, user_prompt)).replace("*", "").strip()
     _ensure_generated(text)
+    text = await _fix_foreign_ip(llm, text)
     if (
         find_cliches(text)
         or find_contact_claims(text)
@@ -1040,8 +1084,11 @@ async def generate_followup(llm, post: dict, minutes_since: int, recent_followup
               "с реальными людьми и без названий своих прошлых проектов и точных лет своей карьеры.",
         )).replace("*", "").strip()
         _ensure_generated(text)
+        text = await _fix_foreign_ip(llm, text)
         if find_contact_claims(text):
             raise ValueError("В добивке осталось выдуманное знакомство с реальным человеком")
+    if variety.find_foreign_ip_sentences(text):
+        raise ValueError("В добивке осталось присвоение чужого телепроекта")
     if variety.has_private(text):
         raise ValueError("В добивке личное (семья или здоровье)")
     if variety.has_bio_anchor(text):

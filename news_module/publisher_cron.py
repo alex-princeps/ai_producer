@@ -74,7 +74,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     Автономный воркер для публикации постов в канал из TG_CHANNEL_ID.
 
     Пайплайн:
-    1. Решает, что сегодня в этот слот: обычный пост, «Вопрос продюсеру» (каждый 3-й пост), личная заметка (воскресенье) или пропуск
+    1. Решает, что сегодня в этот слот: обычный пост, «Вопрос из зрительного зала» (каждый 5-й пост), личная заметка (воскресенье) или пропуск
     2. Читает свежую новость из tg_news.json (результат работы tg_news.py) и проверяет, не была ли она опубликована
     3. Ждёт случайные 0..PUBLISH_JITTER_MIN минут, чтобы посты не выходили минута в минуту
     4. Генерирует пост через news_module/post_builder.py: формат, настроение и сцена дня, память о своих постах,
@@ -85,7 +85,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     8. Если выпала опечатка (TYPO_PROB): пост уходит с ней, а через 2-25 минут правится
 
     --dry-run: генерирует пост и печатает его, ничего не публикуя и не пропуская.
-    --vault: рубрика «Вопрос продюсеру» из золотого фонда тем вместо новости.
+    --vault: рубрика «Вопрос из зрительного зала» из золотого фонда тем вместо новости.
     --personal: личная заметка вместо поста по новости.
     --typo: опечатка обязательно (в --dry-run показывает, как выглядел бы пост с ней).
     --poetry: цитата из стихов обязательно (если есть банк цитат).
@@ -120,14 +120,14 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     personal = force_personal
     history = news_data.get("post_history", [])
 
-    # Подсчёт постов с момента последнего "Вопроса продюсеру" (рубрика раз в 3 дня)
+    # Подсчёт постов с момента последнего «Вопроса из зрительного зала» (каждый 5-й пост = раз в 5 дней)
     since_vault = 0
     for p in reversed(history):
         if p.get("format") == "vault_question":
             break
         since_vault += 1
 
-    is_vault = force_vault or (since_vault >= 2 and not force_personal)
+    is_vault = force_vault or (since_vault >= 4 and not force_personal and not force_format)
 
     if columnist.load_persona() and not force_personal and not force_vault and not dry_run:
         day = columnist.get_day(now)
@@ -142,7 +142,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     use_curator = False
 
     if is_vault:
-        logger.info(f"🏛️ [Publisher] Сегодня рубрика «Вопрос продюсеру» из золотого фонда тем (прошло {since_vault} постов без неё).")
+        logger.info(f"🏛️ [Publisher] Сегодня рубрика «Вопрос из зрительного зала» из золотого фонда тем (прошло {since_vault} постов без неё).")
     elif personal:
         logger.info("📝 [Publisher] Сегодня личная заметка вместо новости.")
     else:
@@ -368,7 +368,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Публикация поста Аристарха в канал")
     parser.add_argument("--dry-run", action="store_true", help="сгенерировать и показать пост, не публикуя и не меняя tg_news.json")
-    parser.add_argument("--vault", dest="force_vault", action="store_true", help="рубрика «Вопрос продюсеру» из золотого фонда тем")
+    parser.add_argument("--vault", dest="force_vault", action="store_true", help="рубрика «Вопрос из зрительного зала» из золотого фонда тем")
     parser.add_argument("--format", dest="force_format", help="принудительный формат поста (id из POST_FORMATS), для тестов")
     parser.add_argument("--personal", action="store_true", help="личная заметка вместо поста по новости")
     parser.add_argument("--no-jitter", action="store_true", help="публиковать сразу, без случайной паузы")

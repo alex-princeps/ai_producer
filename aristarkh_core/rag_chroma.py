@@ -212,6 +212,14 @@ class RAGService:
             
         logger.info(f"✅ RAG база обновлена. Всего чанков: {self.collection.count()}")
 
+    # Личные посты и интервью Н. Картозии от 1-го лица исключаем из фактического RAG,
+    # чтобы Аристарх не перенимал чужую автобиографию и проекты («Четыре свадьбы», родители и т.д.).
+    # Методические уроки (Р1–Р13) и отчёт о 70 продюсерах мира (industrial experience) остаются.
+    EXCLUDED_SOURCE_PREFIXES = (
+        "[ИСТОЧНИК: style guide posts]",
+        "[ИСТОЧНИК: style guide longreads]",
+    )
+
     async def search(self, query: str, top_k=5, enhance: bool = True) -> str:
         if self.collection.count() == 0: return ""
         
@@ -224,15 +232,21 @@ class RAGService:
         
         if not query_vec: return ""
         
+        fetch_k = min(max(top_k * 4, 15), self.collection.count())
         results = await asyncio.to_thread(
             self.collection.query,
             query_embeddings=[query_vec],
-            n_results=top_k
+            n_results=fetch_k
         )
         
         if results and results['documents'] and results['documents'][0]:
-            # Склеиваем найденные куски с разделителями для Gemini
-            return "\n\n=== СЛЕДУЮЩИЙ ФРАГМЕНТ АРХИВА ===\n\n".join(results['documents'][0])
+            filtered = [
+                doc for doc in results['documents'][0]
+                if not doc.lstrip().startswith(self.EXCLUDED_SOURCE_PREFIXES)
+            ][:top_k]
+            if filtered:
+                # Склеиваем найденные куски с разделителями для Gemini
+                return "\n\n=== СЛЕДУЮЩИЙ ФРАГМЕНТ АРХИВА ===\n\n".join(filtered)
         return ""
 
     # === [UPGRADED] ЭПИЗОДИЧЕСКАЯ ПАМЯТЬ С КОГНИТИВНЫМ СКОРИНГОМ (SMALLVILLE) ===

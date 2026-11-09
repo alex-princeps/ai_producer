@@ -252,9 +252,10 @@ class LLMService:
         memory_block = ""
         if rag_context:
             memory_block = (
-                f"\n\n[ТВОЯ ПРОФЕССИОНАЛЬНАЯ БАЗА ЗНАНИЙ — ЛЕКЦИИ И ОПЫТ]\n"
+                f"\n\n[СПРАВКА: ЧУЖИЕ ИНДУСТРИАЛЬНЫЕ КЕЙСЫ И МЕТОДОЛОГИЯ]\n"
+                f"(Рассказчик во фрагментах ниже — другой продюсер; его шоу и каналы — НЕ твоя биография.)\n"
                 f"{rag_context}\n\n"
-                f"Опирайся на эти лекции, методологию и опыт при написании поста!"
+                f"Опирайся на механику и принципы из этой справки, но любые реальные чужие шоу упоминай строго со стороны в третьем лице."
             )
         
         final_system_prompt = system_prompt + memory_block
@@ -446,7 +447,10 @@ class LLMService:
         if episodic_context:
             memory_block += f"=== ПРОШЛЫЕ РАЗГОВОРЫ ===\n{episodic_context}\n"
         if rag_context:
-            memory_block += f"=== БАЗА ЗНАНИЙ ===\n{rag_context}\n"
+            memory_block += (
+                "=== ИНДУСТРИАЛЬНАЯ СПРАВКА (ЧУЖИЕ КЕЙСЫ И МЕТОДОЛОГИЯ — РАССКАЗЧИК ДРУГОЙ ПРОДЮСЕР, НЕ ТЫ) ===\n"
+                f"{rag_context}\n"
+            )
         if search_results:
             memory_block += f"=== СВЕЖИЕ ФАКТЫ ИЗ ИНТЕРНЕТА ===\n{search_results}\n"
 
