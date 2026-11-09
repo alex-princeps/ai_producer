@@ -31,8 +31,13 @@ async def formulate_question_to_aristarkh(news_item: dict, api_key: str | None =
     url = f"https://generativelanguage.googleapis.com/v1beta/{model}:generateContent?key={key}"
     
     title = news_item.get("title", "")
-    content = news_item.get("content", "") or news_item.get("original_text", "")
-    news_text = f"{title}\n{content}".strip()[:2000]
+    # При работе куратора в content лежит заглушка «(пересказа нет, читай оригинал)», а сама новость — в original_text
+    orig = (news_item.get("original_text") or "").strip()
+    summary = (news_item.get("content") or "").strip()
+    if summary.startswith("(пересказа нет"):
+        summary = ""
+    body = orig or summary
+    news_text = f"{title}\n{body}".strip()[:2500]
     
     payload = {
         "systemInstruction": {"parts": [{"text": PROVOCATEUR_SYSTEM_PROMPT}]},
