@@ -489,8 +489,8 @@ def _body_html(text: str, cta: str | None) -> str:
     return html.escape(text.strip()) + (f"\n\n<i>{html.escape(cta)}</i>" if cta else "")
 
 
-def render_post_html(comment: str, news: dict, cta: str | None = None) -> str:
-    """Шапка со ссылкой и свёрнутой цитатой + сам комментарий (HTML для Telegram)."""
+def render_post_html(comment: str, news: dict, cta: str | None = None, question: str | None = None) -> str:
+    """Шапка со ссылкой и свёрнутой цитатой + вопрос продюсеру + сам комментарий (HTML для Telegram)."""
     url = news.get("url") or extract_url(news.get("content", ""))
     channel = news.get("channel")
     # Старый формат новости (до выбора по номеру): «суть + URL: ссылка» - чистим хвост
@@ -501,14 +501,19 @@ def render_post_html(comment: str, news: dict, cta: str | None = None) -> str:
     if url:
         label = f"Новость · @{channel}" if channel else "Новость"
         header.append(f'🔗 <a href="{html.escape(url, quote=True)}">{html.escape(label)}</a>')
+    
+    q_block = []
+    if question:
+        q_block.append(f"💬 <b>Вопрос продюсеру:</b>\n<i>«{html.escape(question.strip())}»</i>")
+
     body = _body_html(comment, cta)
 
     quote_limit = QUOTE_MAX_CHARS
     while True:
         quote = html.escape(_trim(quote_src, quote_limit)) if quote_src else ""
         # Свёрнутая цитата: в ленте видно начало, остальное раскрывается по тапу
-        block = header + ([f"<blockquote expandable>{quote}</blockquote>"] if quote else [])
-        result = "\n".join(block) + ("\n\n" if block else "") + body
+        block = header + ([f"<blockquote expandable>{quote}</blockquote>"] if quote else []) + q_block
+        result = "\n\n".join(block) + ("\n\n" if block else "") + body
         if len(result) <= TELEGRAM_LIMIT or quote_limit <= 100:
             return result[:TELEGRAM_LIMIT]
         quote_limit -= 150
@@ -577,17 +582,20 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
     обрыв на полуслове. Если что-то не так - один проход переписывания. Выдуманное знакомство, личное,
     проверяемые приметы биографии или оборванный текст, пережившие переписывание, останавливают публикацию.
     """
-    problems = find_cliches(text) + list(extra_problems or [])
+    # Ослабление петли переписывания: даём модели право на дерзость с первого дубля.
+    # Переписываем ТОЛЬКО критические проблемы: обрыв текста, выдумка знакомства под NDA, личное (семья/здоровье), метка-рубрика.
+    # Стилистические шероховатости (метафоры, резкие слова) НЕ выхолащиваем рерайтом!
+    problems = list(extra_problems or [])
     if is_truncated(text):
         problems.append(TRUNCATED_FIX)
     if find_contact_claims(text):
         problems.append(CONTACT_FIX)
+    if variety.has_private(text):
+        problems.append(variety.PRIVATE_FIX)
+    if variety.has_bio_anchor(text):
+        problems.append(variety.BIO_ANCHOR_FIX)
     if RUBRIC_RE.search(text):
         problems.append(RUBRIC_FIX)
-    military = find_military(text, allow_hobby)
-    if military:
-        problems.append(MILITARY_FIX.format(found=", ".join(military)))
-    problems += variety.violations(text, banned or [])
     if problems:
         logger.info(f"♻️ [Post] Переписываем: {problems}")
         rewrite_prompt = (
@@ -677,12 +685,14 @@ async def generate_post(
     llm, rag_service, core_beliefs: list, news: dict, history: list[dict], force_format: str | None = None,
     cta_handle: str | None = None, poetry_mode: bool | None = None,
     hook_line: str | None = None, return_of: str | None = None,
+    provocateur_question: str | None = None,
 ) -> tuple[str, dict]:
     """
     Генерирует пост. Возвращает (html для отправки, метаданные для истории).
     history - последние посты: [{"format": id, "opening": "...", "cta": bool}].
     cta_handle - @username бота; если передан (CHANNEL_BOT_CTA), раз в 4-5 постов в конце ставится ссылка на него.
     poetry_mode - None: стихи с вероятностью POETRY_PROB (при файле личности и банке цитат); True/False: принудительно.
+    provocateur_question - острый вопрос от субагента-провокатора в стиле Алекса.
     """
     persona = columnist.load_persona()
     bank, candidates = _poetry_plan(history, poetry_mode) if persona else ([], [])
@@ -729,6 +739,11 @@ async def generate_post(
     if hook_line:
         angle_block += ("\n\n" if angle_block else "") + (
             "[ЧТО ТЕБЯ ЗАЦЕПИЛО В ЭТОЙ НОВОСТИ - это твой угол, от него и строй пост]\n" + hook_line.strip())
+    if provocateur_question:
+        angle_block += ("\n\n" if angle_block else "") + (
+            f"[КАВЕРЗНЫЙ ВОПРОС ОТ СПАРРИНГ-ПАРТНЁРА]:\n«{provocateur_question.strip()}»\n"
+            "Ответь на этот вопрос хлёстко, едко и цинично, препарируя изнанку новости как хам-профессионал!"
+        )
     optic_id, optic = pick_optic(history)
     system_prompt = build_system_prompt(fmt, tone, core_beliefs, rag_ctx, recent_openings, hook,
                                         persona=persona, day_block=day_block, recent_block=recent_block,
@@ -762,10 +777,10 @@ async def generate_post(
     meta = {
         "format": fmt["id"], "tone": tone, "mood": day["mood"] if day else None, "hook": hook, "cta": cta,
         "poetry": _poetry_meta(verse), "takeaway_style": style_id, "optic": optic_id, "url": news.get("url"),
-        "hook": hook_line, "return": bool(return_of),
+        "hook": hook_line, "return": bool(return_of), "provocateur_question": provocateur_question,
         "opening": _opening(comment), "chars": len(comment), "text": comment,
     }
-    return render_post_html(comment, news, cta_line(cta_handle) if cta else None), meta
+    return render_post_html(comment, news, cta_line(cta_handle) if cta else None, question=provocateur_question), meta
 
 
 async def generate_personal(llm, history: list[dict], poetry_mode: bool | None = None) -> tuple[str, dict]:
@@ -891,6 +906,57 @@ async def generate_razbor(
     tail = RAZBOR_CTA.format(bot=cta_handle) if cta_handle else (RAZBOR_INVITE if COMMENTS_OPEN else None)
     meta = {"format": "razbor", "cta": bool(cta_handle), "chars": len(answer), "text": answer, "question": question}
     return render_razbor_html(question, answer, tail), meta
+
+
+HAM_PRODUCER_PROMPT = """
+Ты — Аристарх Градов. Тебе 55 лет. Легендарный телевизионный шоураннер, демиург-трикстер, акула медиабизнеса и циничный продюсер с Патриарших.
+По натуре ты сноб, эстет, интеллектуал и хам-профессионал. Твое хамство — это хирургический скальпель, снимающий фальшь, глянец и дешёвый пиар с медиа, шоу-бизнеса и людей.
+Ты ведёшь авторский Telegram-канал «Продюсер Градов». Здесь нет цензуры, нет стерильной вежливости и нет скучных консультаций для малого бизнеса.
+
+ТВОЙ СТИЛЬ И ГОЛОС:
+1. «Хам-профессионал без анестезии»: говоришь прямо, хлёстко, едко, с ядовитой иронией и глубочайшим пониманием того, как устроены рейтинги, бабло, человеческие пороки и телевизионная драматургия.
+2. Не бойся крепкого слова, если оно бьёт точно в цель. Никакой политкорректности и слащавости.
+3. Анатомия феномена: в любом вопросе или кринже вскрывай изнанку — где там деньги, против кого дружат, почему это хавает массовый зритель и какая продюсерская механика за этим стоит.
+4. Живой язык: образный, сочный, телевизионный жаргон и петербургская эстетская язвительность.
+5. Формат: цельный авторский текст, разбитый на живые абзацы. Без списков, без заголовков, без звёздочек markdown (*), без морализаторства.
+6. Длина ответа: 1400–2600 символов.
+"""
+
+
+async def generate_vault_post(
+    llm, rag_service, core_beliefs: list, topic_item: dict, cta_handle: str | None = None
+) -> tuple[str, dict]:
+    """
+    Рубрика «Вопрос продюсеру»: препарирование острой темы из золотого фонда Алекса.
+    Голос: чистый «Хам-профессионал» без анестезии на температуре 0.95.
+    """
+    question = topic_item.get("question", "").strip()
+    rag_ctx = await rag_service.search(question, top_k=2, enhance=False) if rag_service else ""
+    knowledge = (
+        f"\n\n[ТВОЯ ПРОФЕССИОНАЛЬНАЯ БАЗА ЗНАНИЙ ДЛЯ ФОНА]\n{rag_ctx}\n"
+    ) if rag_ctx else ""
+
+    system_prompt = HAM_PRODUCER_PROMPT + knowledge
+    user_prompt = f"Вопрос от читателя / спарринг-партнёра:\n«{question}»\n\nДай свой ответ для авторского Telegram-канала."
+
+    answer = (await llm.generate_standalone(system_prompt, user_prompt, temp=0.95)).replace("*", "").strip()
+    _ensure_generated(answer)
+    answer = await _polish(llm, system_prompt, user_prompt, answer)
+
+    html_post = (
+        f"💬 <b>Вопрос продюсеру:</b>\n"
+        f"<i>«{html.escape(question)}»</i>\n\n"
+        f"{html.escape(answer)}"
+    )
+    meta = {
+        "format": "vault_question",
+        "topic_id": topic_item.get("id"),
+        "title": topic_item.get("title"),
+        "chars": len(answer),
+        "text": answer,
+        "question": question,
+    }
+    return html_post, meta
 
 
 def append_history(history: list[dict], meta: dict) -> list[dict]:

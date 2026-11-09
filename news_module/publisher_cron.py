@@ -13,10 +13,11 @@ from aristarkh_core.config import config, logger
 from aristarkh_core.gemini import LLMService
 from aristarkh_core.rag_chroma import RAGService
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
-from news_module import columnist, curator, poetry, typos
+from news_module import columnist, curator, poetry, typos, provocateur, topics_vault
 from news_module.state_io import update_json
 from news_module.post_builder import (
-    BOT_CTA_ENABLED, POST_FORMATS, append_history, generate_personal, generate_post, schedule_followup,
+    BOT_CTA_ENABLED, POST_FORMATS, append_history, generate_personal, generate_post,
+    generate_vault_post, schedule_followup,
 )
 
 # Канал для постов (задаётся только через .env)
@@ -66,13 +67,14 @@ async def _fix_typo(bot: Bot, news_path: str, message_id: int, correct_html: str
 
 
 async def run_publisher(dry_run: bool = False, force_format: str | None = None,
-                        force_personal: bool = False, no_jitter: bool = False,
-                        force_typo: bool = False, force_poetry: bool = False):
+                        force_personal: bool = False, force_vault: bool = False,
+                        no_jitter: bool = False, force_typo: bool = False,
+                        force_poetry: bool = False):
     """
     Автономный воркер для публикации постов в канал из TG_CHANNEL_ID.
 
     Пайплайн:
-    1. Решает, что сегодня в этот слот: обычный пост, личная заметка (воскресенье) или пропуск
+    1. Решает, что сегодня в этот слот: обычный пост, «Вопрос продюсеру» (каждый 3-й пост), личная заметка (воскресенье) или пропуск
     2. Читает свежую новость из tg_news.json (результат работы tg_news.py) и проверяет, не была ли она опубликована
     3. Ждёт случайные 0..PUBLISH_JITTER_MIN минут, чтобы посты не выходили минута в минуту
     4. Генерирует пост через news_module/post_builder.py: формат, настроение и сцена дня, память о своих постах,
@@ -83,6 +85,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     8. Если выпала опечатка (TYPO_PROB): пост уходит с ней, а через 2-25 минут правится
 
     --dry-run: генерирует пост и печатает его, ничего не публикуя и не пропуская.
+    --vault: рубрика «Вопрос продюсеру» из золотого фонда тем вместо новости.
     --personal: личная заметка вместо поста по новости.
     --typo: опечатка обязательно (в --dry-run показывает, как выглядел бы пост с ней).
     --poetry: цитата из стихов обязательно (если есть банк цитат).
@@ -115,39 +118,56 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
     now = datetime.now(columnist.MSK)
     slot = columnist.slot_of(now)
     personal = force_personal
-    if columnist.load_persona() and not force_personal and not dry_run:
+    history = news_data.get("post_history", [])
+
+    # Подсчёт постов с момента последнего "Вопроса продюсеру" (рубрика раз в 3 дня)
+    since_vault = 0
+    for p in reversed(history):
+        if p.get("format") == "vault_question":
+            break
+        since_vault += 1
+
+    is_vault = force_vault or (since_vault >= 2 and not force_personal)
+
+    if columnist.load_persona() and not force_personal and not force_vault and not dry_run:
         day = columnist.get_day(now)
         if random.random() < columnist.skip_probability(day, slot):
             logger.info(f"🛋️ [Publisher] Сегодня не пишется (настроение «{day['mood']}»): слот пропущен.")
             return
-        personal = now.weekday() == 6 and random.random() < PERSONAL_SUNDAY_PROB
+        if not is_vault:
+            personal = now.weekday() == 6 and random.random() < PERSONAL_SUNDAY_PROB
 
     digest = news_data.get("current_digest", {})
-    # Куратор: Ари сам выбирает из свежего короткого списка (NEWS_CURATOR=on). Список старше 6 часов не берём.
     sl = news_data.get("current_shortlist") or {}
-    try:
-        sl_fresh = datetime.now() - datetime.strptime(sl.get("date", ""), "%Y-%m-%d %H:%M:%S") < timedelta(hours=6)
-    except ValueError:
-        sl_fresh = False
-    use_curator = (curator.CURATOR_ON and not personal and columnist.load_persona() is not None
-                   and bool(sl.get("items")) and (sl_fresh or dry_run))
-    if use_curator:
-        logger.info(f"🧐 [Publisher] Ари сам листает ленту: в списке {len(sl['items'])} новостей.")
-    elif not personal:
-        if not digest or "content" not in digest:
-            logger.error("❌ [Publisher] В tg_news.json нет актуального current_digest.")
-            return
-        # === ШАГ 2: Проверка на дубли ===
-        if digest.get("published", False) and not dry_run:
-            logger.info("⏩ [Publisher] Эта новость уже была опубликована. Пропускаем.")
-            return
-        news_text = digest.get("content", "").strip()
-        if not news_text:
-            logger.error("❌ [Publisher] Пустой текст новости в current_digest.")
-            return
-        logger.info(f"📰 [Publisher] Взята новость в работу: {news_text[:100]}...")
-    else:
+    use_curator = False
+
+    if is_vault:
+        logger.info(f"🏛️ [Publisher] Сегодня рубрика «Вопрос продюсеру» из золотого фонда тем (прошло {since_vault} постов без неё).")
+    elif personal:
         logger.info("📝 [Publisher] Сегодня личная заметка вместо новости.")
+    else:
+        # Куратор: Ари сам выбирает из свежего короткого списка (NEWS_CURATOR=on). Список старше 6 часов не берём.
+        try:
+            sl_fresh = datetime.now() - datetime.strptime(sl.get("date", ""), "%Y-%m-%d %H:%M:%S") < timedelta(hours=6)
+        except ValueError:
+            sl_fresh = False
+        use_curator = (curator.CURATOR_ON and columnist.load_persona() is not None
+                       and bool(sl.get("items")) and (sl_fresh or dry_run))
+        if use_curator:
+            logger.info(f"🧐 [Publisher] Ари сам листает ленту: в списке {len(sl['items'])} новостей.")
+        else:
+            if not digest or "content" not in digest:
+                logger.error("❌ [Publisher] В tg_news.json нет актуального current_digest.")
+                return
+            # === ШАГ 2: Проверка на дубли ===
+            if digest.get("published", False) and not dry_run:
+                logger.info("⏩ [Publisher] Эта новость уже была опубликована. Пропускаем.")
+                return
+            news_text = digest.get("content", "").strip()
+            if not news_text:
+                logger.error("❌ [Publisher] Пустой текст новости в current_digest.")
+                return
+            logger.info(f"📰 [Publisher] Взята новость в работу: {news_text[:100]}...")
 
     # === ШАГ 2.5: Живой автор не публикует минута в минуту ===
     if not dry_run and not no_jitter and PUBLISH_JITTER_MIN > 0:
@@ -183,6 +203,23 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
                 # === Личная заметка: без новости, без шапки, без добивки ===
                 logger.info("🧠 [Publisher] Аристарх пишет личную заметку...")
                 channel_post, post_meta = await generate_personal(llm, history, poetry_mode=force_poetry or None)
+            elif is_vault:
+                # === Рубрика «Вопрос продюсеру» из золотого фонда тем ===
+                logger.info("🧠 [Publisher] Аристарх препарирует тему из золотого фонда...")
+                if dry_run:
+                    vault_topic = topics_vault.peek_next_vault_topic()
+                else:
+                    vault_topic = topics_vault.get_next_vault_topic()
+
+                if not vault_topic:
+                    logger.warning("⚠️ [Publisher] Все темы из фонда использованы!")
+                    return
+
+                core_beliefs = evolution_engine.get_current_beliefs()
+                cta_handle = f"@{(await bot.get_me()).username}" if BOT_CTA_ENABLED else None
+                channel_post, post_meta = await generate_vault_post(
+                    llm, rag_service, core_beliefs, vault_topic, cta_handle=cta_handle
+                )
             else:
                 hook_line = return_of = None
                 curator_ctx = None
@@ -217,6 +254,14 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
                 core_beliefs = evolution_engine.get_current_beliefs()
                 logger.info(f"🧬 [Publisher] Загружено убеждений: {len(core_beliefs)}")
 
+                # === Спарринг-партнёр: каверзный вопрос к новости ===
+                prov_q = None
+                try:
+                    prov_q = await provocateur.formulate_question_to_aristarkh(digest)
+                    logger.info(f"🥊 [Provocateur] Спарринг-вопрос: {prov_q}")
+                except Exception as e:
+                    logger.warning(f"⚠️ [Provocateur] Ошибка формулирования вопроса: {e}")
+
                 # === ШАГ 5: Генерация поста (формат, тон, анти-клише, RAG, шапка со ссылкой) ===
                 # Ссылка на бота в постах только при CHANNEL_BOT_CTA: по умолчанию канал - витрина личности
                 cta_handle = f"@{(await bot.get_me()).username}" if BOT_CTA_ENABLED else None
@@ -224,6 +269,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
                 channel_post, post_meta = await generate_post(
                     llm, rag_service, core_beliefs, digest, history, fmt_wanted, cta_handle=cta_handle,
                     poetry_mode=force_poetry or None, hook_line=hook_line, return_of=return_of,
+                    provocateur_question=prov_q,
                 )
                 if curator_ctx:
                     post_meta["topic"] = curator_ctx[3][0].get("topic")
@@ -254,7 +300,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
             )
             logger.info(f"✅ [Publisher] Пост успешно опубликован! Message ID: {sent_message.message_id}")
             published_at = datetime.now(timezone.utc)
-            followup_at = None if personal else schedule_followup(published_at)
+            followup_at = None if (personal or is_vault) else schedule_followup(published_at)
             post_meta.update({
                 "channel": CHANNEL_ID,
                 "message_id": sent_message.message_id,
@@ -269,26 +315,29 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
                 logger.info(f"⏰ [Publisher] Запланирована добивка на {followup_at.isoformat()}")
             if personal:
                 columnist.journal_add("personal", post_meta["text"], topic=post_meta.get("topic"))
+            elif is_vault:
+                columnist.journal_add("vault_question", post_meta["text"], topic=post_meta.get("title"))
 
             # === ШАГ 7: История постов и флаг published - в свежую копию файла под блокировкой ===
             def record(data: dict):
                 data["post_history"] = append_history(data.get("post_history", []), post_meta)
-                if not personal and curator_ctx:
+                if not personal and not is_vault and curator_ctx:
                     # Выбор куратора становится текущей новостью, и её ссылка больше не попадёт в ленту
                     chosen_digest = {**digest, "published": True, "published_at": published_at.isoformat(),
                                      "published_message_id": sent_message.message_id}
                     data["digests_history"] = (data.get("digests_history", []) + [chosen_digest])[-30:]
                     data["current_digest"] = chosen_digest
                     return
-                current = data.get("current_digest", {})
-                if not personal and current.get("url") == digest.get("url"):
-                    current.update(published=True, published_at=published_at.isoformat(),
-                                   published_message_id=sent_message.message_id)
+                if not personal and not is_vault:
+                    current = data.get("current_digest", {})
+                    if current.get("url") == digest.get("url"):
+                        current.update(published=True, published_at=published_at.isoformat(),
+                                       published_message_id=sent_message.message_id)
 
             try:
                 update_json(news_path, record)
                 logger.info("📝 [Publisher] История постов сохранена.")
-                if not personal and curator_ctx:
+                if not personal and not is_vault and curator_ctx:
                     curator.log_decision(curator.decision_entry(curator_ctx[0], curator_ctx[1], curator_ctx[2],
                                                                 curator_ctx[3], sent_message.message_id))
             except Exception as e:
@@ -319,6 +368,7 @@ async def run_publisher(dry_run: bool = False, force_format: str | None = None,
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Публикация поста Аристарха в канал")
     parser.add_argument("--dry-run", action="store_true", help="сгенерировать и показать пост, не публикуя и не меняя tg_news.json")
+    parser.add_argument("--vault", dest="force_vault", action="store_true", help="рубрика «Вопрос продюсеру» из золотого фонда тем")
     parser.add_argument("--format", dest="force_format", help="принудительный формат поста (id из POST_FORMATS), для тестов")
     parser.add_argument("--personal", action="store_true", help="личная заметка вместо поста по новости")
     parser.add_argument("--no-jitter", action="store_true", help="публиковать сразу, без случайной паузы")
@@ -326,5 +376,5 @@ if __name__ == "__main__":
     parser.add_argument("--poetry", action="store_true", help="цитата из стихов обязательно (нужен банк цитат)")
     args = parser.parse_args()
     asyncio.run(run_publisher(dry_run=args.dry_run, force_format=args.force_format,
-                              force_personal=args.personal, no_jitter=args.no_jitter,
-                              force_typo=args.typo, force_poetry=args.poetry))
+                              force_personal=args.personal, force_vault=args.force_vault,
+                              no_jitter=args.no_jitter, force_typo=args.typo, force_poetry=args.poetry))

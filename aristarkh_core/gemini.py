@@ -232,7 +232,7 @@ class LLMService:
 
     # === [NEW] МЕТОД ГЕНЕРАЦИИ АВТОРСКИХ ПОСТОВ ДЛЯ КАНАЛА (С RAG-БАЗОЙ!) ===
     @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
-    async def generate_standalone(self, system_prompt: str, user_query: str, rag_context: str = "") -> str:
+    async def generate_standalone(self, system_prompt: str, user_query: str, rag_context: str = "", temp: float = 0.95) -> str:
         """
         Изолированный метод для написания постов в канал DeusExMedia.
         
@@ -265,7 +265,7 @@ class LLMService:
             "contents": [{"role": "user", "parts": [{"text": user_query}]}],
             "safetySettings": self.safety_settings,
             "generationConfig": {
-                "temperature": 0.8,
+                "temperature": temp,
                 # gemini-3.1-pro — thinking-модель: maxOutputTokens расходуется и на скрытые рассуждения
                 # (thoughtsTokenCount), и на видимый текст. При 4096 сложные промпты съедали ~3950 токенов
                 # на мысли и обрывали пост на полуслове (посты №191, №197).
