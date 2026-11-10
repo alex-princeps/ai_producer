@@ -50,7 +50,8 @@ async def formulate_question_to_aristarkh(news_item: dict, api_key: str | None =
         ],
         "generationConfig": {
             "temperature": 0.85,
-            "maxOutputTokens": 1000
+            "maxOutputTokens": 2048,
+            "thinkingConfig": {"thinkingBudget": 512}
         }
     }
     

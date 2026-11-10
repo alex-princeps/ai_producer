@@ -414,6 +414,28 @@ def filter_top_news(all_posts: list):
         return None
 
 
+def _is_vault_day() -> bool:
+    """Проверяет, выпадает ли сегодняшний слот на каждый 5-й пост из Золотого фонда (чтобы не жечь токены на парсинг)."""
+    if not os.path.exists(JSON_FILENAME):
+        return False
+    try:
+        with open(JSON_FILENAME, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        history = data.get("post_history", [])
+        since_vault = 0
+        for p in reversed(history):
+            if p.get("format") == "vault_question":
+                break
+            since_vault += 1
+        if since_vault < 4:
+            return False
+        from news_module.topics_vault import count_stats
+        _, unused = count_stats()
+        return unused > 0
+    except Exception:
+        return False
+
+
 def main():
     """
     Главная функция пайплайна.
@@ -422,6 +444,10 @@ def main():
     3. Сохраняет в tg_news.json с флагом published=False
     """
     print(f"🚀 Запуск сборщика новостей: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    if "--force" not in os.sys.argv and _is_vault_day():
+        print("🏛️ Сегодня день рубрики «Вопрос из зрительного зала» (каждый 5-й пост). Сбор новостей и трату токенов пропускаем.")
+        return
     
     # Проверка ключей
     if not GEMINI_API_KEY:
