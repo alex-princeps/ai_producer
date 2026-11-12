@@ -93,8 +93,9 @@ def _load_live_channel_and_day_context() -> tuple[dict, str]:
     base_spatial = ""
     day = {}
     try:
-        day = columnist.get_day(fetch=False)
-        slot = columnist.slot_of()
+        now_msk = columnist.datetime.now(columnist.MSK)
+        day = columnist.get_day(now_msk, fetch=False)
+        slot = columnist.slot_of(now_msk)
         city_in = columnist.CITY_IN.get(day.get("city"), "В Москве")
         scene = (day.get("scenes") or {}).get(slot) or ""
         weather = (day.get("weather") or {}).get(slot) or (day.get("weather") or {}).get("morning") or ""
