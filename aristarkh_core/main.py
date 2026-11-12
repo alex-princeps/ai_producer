@@ -40,7 +40,7 @@ from aristarkh_core.assistant import AssistantService
 from semantic_memory import SemanticMemory
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
 from aristarkh_core.context_simulator import ContextSimulator  # [NEW] Симулятор среды обитания
-from news_module import columnist
+from news_module import columnist, table_vault, topics_vault
 from news_module.post_builder import BOT_CTA_ENABLED, extract_url, generate_post, generate_razbor
 from aristarkh_core.humanize import humanize_punctuation
 import uuid
@@ -121,9 +121,17 @@ def _load_live_channel_and_day_context() -> tuple[dict, str]:
             last_post = history[-1] if history else {}
             cur_digest = news_data.get("current_digest") or {}
             if last_post:
-                if last_post.get("format") == "vault_question":
+                fmt = last_post.get("format")
+                if fmt == "vault_question":
                     q_text = last_post.get("question") or last_post.get("title") or last_post.get("opening") or ""
-                    news_summary = f"Вопрос из зрительного зала: «{q_text[:240]}»"
+                    news_summary = f"Пятничная рубрика «Вопрос из зрительного зала»: «{q_text[:240]}»"
+                elif fmt == "b2b_sunday":
+                    k_text = last_post.get("kind") or "Вскрытие кассы"
+                    t_text = last_post.get("title") or ""
+                    news_summary = f"Воскресная B2B-колонка «{k_text} · {t_text}»"
+                elif fmt == "table_surgery":
+                    raw_t = last_post.get("raw_text") or last_post.get("title") or ""
+                    news_summary = f"Среда, рубрика «Монтажный стол: Было → Стало»: «{raw_t[:220]}»"
                 else:
                     raw_news = cur_digest.get("original_text") or last_post.get("hook") or last_post.get("opening") or ""
                     news_summary = raw_news.strip().replace("\n", " ")[:240]
@@ -158,6 +166,10 @@ class BotStates(StatesGroup):
     generating = State()  # [NEW] Режим блокировки — Аристарх думает
     waiting_for_long_input = State()
     waiting_for_promo = State()
+    waiting_for_hall_question = State()
+    waiting_for_table_text = State()
+    b2b_scale = State()
+    b2b_contact = State()
 
 
 class BriefStates(StatesGroup):
@@ -207,6 +219,28 @@ def settings_kb(t: float, lang: str) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=f"{'✅ ' if t==0.7 else ''}{i18n.get_text('temp_norm', lang)}", callback_data="temp_0.7")],
         [InlineKeyboardButton(text=f"{'✅ ' if t==1.3 else ''}{i18n.get_text('temp_boom', lang)}", callback_data="temp_1.3")],
         [InlineKeyboardButton(text=i18n.get_text("btn_reset_context", lang), callback_data="reset_context")]
+    ])
+
+
+def paywall_kb(lang: str) -> InlineKeyboardMarkup:
+    """Основная рублёвая тарифная сетка + B2B-квалификатор + фоллбэк на Stars и промокод."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n.get_text("pkg_rub_trial", lang), callback_data="buy_rub_15_7_1490")],
+        [InlineKeyboardButton(text=i18n.get_text("pkg_rub_expert", lang), callback_data="buy_rub_60_30_4900")],
+        [InlineKeyboardButton(text=i18n.get_text("pkg_rub_producer", lang), callback_data="buy_rub_200_30_9900")],
+        [InlineKeyboardButton(text=i18n.get_text("btn_b2b_clone", lang), callback_data="b2b_start")],
+        [InlineKeyboardButton(text=i18n.get_text("btn_stars_fallback", lang), callback_data="show_stars_tariffs")],
+        [InlineKeyboardButton(text=i18n.get_text("btn_promo", lang), callback_data="enter_promo")],
+    ])
+
+
+def stars_kb(lang: str) -> InlineKeyboardMarkup:
+    """Резервная сетка оплаты в Telegram Stars для зарубежных карт."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n.get_text("pkg_10", lang), callback_data="buy_10_0_1000")],
+        [InlineKeyboardButton(text=i18n.get_text("pkg_7d", lang), callback_data="buy_25_7_2000")],
+        [InlineKeyboardButton(text=i18n.get_text("pkg_30d", lang), callback_data="buy_100_30_5000")],
+        [InlineKeyboardButton(text="🔙 К рублёвым тарифам", callback_data="show_rub_tariffs")],
     ])
 
 
@@ -298,12 +332,22 @@ async def trigger_processing(message: types.Message, state: FSMContext, user_id:
         if current_state == BotStates.generating.state:
             await state.set_state(BotStates.chatting)
 
-# --- HANDLERS: START ---
+# Буферы входящих вопросов и текстов для спецрубрик канала (для 1-клик одобрения админом)
+hall_submissions: dict[str, dict] = {}
+table_submissions: dict[str, dict] = {}
+
+
+# --- HANDLERS: START & DEEP-LINK ROUTER (hall, table, pin) ---
 @dp.message(Command("start"))
-async def cmd_start(message: types.Message, state: FSMContext):
+async def cmd_start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
     await state.clear()
+    payload = ((command.args if command else "") or "").strip().lower()
     user = await db_service.get_user(message.from_user.id)
-    await db_service.log_event(message.from_user.id, "START_COMMAND", "New user" if not user else "Returning user")
+    await db_service.log_event(
+        message.from_user.id,
+        "START_COMMAND",
+        f"{'New' if not user else 'Returning'}:{payload or 'direct'}",
+    )
 
     if not user:
         user = await db_service.create_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
@@ -311,28 +355,190 @@ async def cmd_start(message: types.Message, state: FSMContext):
         safe_username = html.escape(message.from_user.username or "без_юзернейма")
         try:
             await bot.send_message(
-                config.ADMIN_ID, 
-                i18n.get_text("new_user_alert", user_id=message.from_user.id, username=safe_username, name=safe_name),
-                parse_mode="HTML"
+                config.ADMIN_ID,
+                i18n.get_text("new_user_alert", user_id=message.from_user.id, username=safe_username, name=safe_name)
+                + (f"\nИсточник: <code>?start={html.escape(payload)}</code>" if payload else ""),
+                parse_mode="HTML",
             )
         except Exception as e:
             logger.error(f"Не удалось отправить уведомление админу: {e}")
-    
+
     lang = i18n.user_lang(message.from_user)
+    await state.update_data(interaction_count=0)
+
+    if payload == "hall":
+        await state.set_state(BotStates.waiting_for_hall_question)
+        await message.answer(i18n.get_text("start_hall_intro", lang), reply_markup=cancel_kb(lang), parse_mode="Markdown")
+        return
+
+    if payload == "table":
+        await state.set_state(BotStates.chatting)
+        await message.answer(
+            i18n.get_text("start_table_intro", lang),
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text=i18n.get_text("btn_table_submit", lang), callback_data="table_submit_start")],
+                [InlineKeyboardButton(text=i18n.get_text("btn_brief_start", lang), callback_data="brief_start")],
+            ]),
+            parse_mode="Markdown",
+        )
+        return
+
     welcome_text = i18n.get_text("start_message", lang)
     await state.set_state(BotStates.chatting)
-    await state.update_data(interaction_count=0)
     await message.answer(welcome_text, reply_markup=main_kb(lang), parse_mode="Markdown")
-    if not await db_service.get_brief(message.from_user.id):
-        await message.answer(
-            i18n.get_text("brief_offer", lang),
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text=i18n.get_text("btn_brief_start", lang), callback_data="brief_start")
-            ]]),
-        )
+    await message.answer(
+        i18n.get_text("brief_offer", lang),
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=i18n.get_text("btn_brief_start", lang), callback_data="brief_start")],
+            [InlineKeyboardButton(text=i18n.get_text("btn_b2b_clone", lang), callback_data="b2b_start")],
+        ]),
+    )
 
-# --- БРИФ ПРОЕКТА: 5 вопросов, ответы подмешиваются в контекст каждого запроса ---
-# Бриф не тратит запросы: это обычные сообщения без вызова модели.
+
+# --- РУБРИКА ПЯТНИЦЫ (?start=hall): приём вопроса + 1-клик добавление в Золотой фонд ---
+@dp.message(BotStates.waiting_for_hall_question, F.text)
+async def hall_question_handler(message: types.Message, state: FSMContext):
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+        return
+
+    q_text = message.text.strip()
+    await db_service.log_event(message.from_user.id, "HALL_QUESTION_SUBMITTED", q_text[:500])
+    sub_id = uuid.uuid4().hex[:8]
+    hall_submissions[sub_id] = {
+        "user_id": message.from_user.id,
+        "username": message.from_user.username or "без_юзернейма",
+        "full_name": message.from_user.full_name or "Без имени",
+        "question": q_text,
+    }
+    if config.ADMIN_ID:
+        try:
+            admin_msg = (
+                f"🎙 <b>Новый вопрос из зрительного зала (?start=hall)</b>\n"
+                f"От: {html.escape(message.from_user.full_name or '')} (@{html.escape(message.from_user.username or 'no_username')}, "
+                f"ID <code>{message.from_user.id}</code>)\n\n"
+                f"<blockquote>{html.escape(q_text[:2500])}</blockquote>"
+            )
+            admin_kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="➕ В Золотой фонд Пятницы", callback_data=f"hall_vault:{sub_id}")],
+                [InlineKeyboardButton(text="⚡️ Сделать /razbor сейчас", callback_data=f"hall_rz:{sub_id}")],
+            ])
+            await bot.send_message(config.ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=admin_kb)
+        except Exception as e:
+            logger.error(f"Не удалось переслать вопрос из зала админу: {e}")
+
+    await state.set_state(BotStates.chatting)
+    await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+    await message.answer(
+        i18n.get_text("start_hall_accepted", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=i18n.get_text("btn_brief_start", lang), callback_data="brief_start")],
+            [InlineKeyboardButton(text=i18n.get_text("btn_b2b_clone", lang), callback_data="b2b_start")],
+        ]),
+    )
+
+
+@dp.callback_query(F.data.startswith("hall_"), F.from_user.id == config.ADMIN_ID)
+async def hall_admin_action(callback: types.CallbackQuery):
+    action, _, sub_id = callback.data.partition(":")
+    sub = hall_submissions.get(sub_id)
+    if not sub:
+        await callback.answer("Заявка устарела (бот перезапускался).", show_alert=True)
+        return
+    if action == "hall_vault":
+        new_id = topics_vault.append_vault_topic(sub["question"])
+        await callback.answer(f"Добавлено в Золотой фонд под #{new_id}!", show_alert=True)
+        await callback.message.reply(f"✅ Вопрос добавлен в <code>Золотой_фонд_тем.md</code> под номером <b>#{new_id}</b>.", parse_mode="HTML")
+    elif action == "hall_rz":
+        await callback.answer("Генерирую превью /razbor...")
+        wait_msg = await callback.message.reply("✍️ Пишу разбор...")
+        try:
+            post_html = await make_razbor(sub["question"])
+            draft_id = uuid.uuid4().hex[:8]
+            razbor_drafts[draft_id] = {"question": sub["question"], "html": post_html}
+            await wait_msg.delete()
+            await callback.message.reply(
+                post_html, parse_mode="HTML",
+                link_preview_options=LinkPreviewOptions(is_disabled=True),
+                reply_markup=razbor_kb(draft_id, "ru"),
+            )
+        except Exception as e:
+            await wait_msg.edit_text(f"❌ Ошибка: {e}")
+
+
+# --- РУБРИКА СРЕДЫ (?start=table): приём пациента на Монтажный стол + 1-клик добавление в Банк ---
+@dp.callback_query(F.data == "table_submit_start")
+async def table_submit_start_cb(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    lang = i18n.user_lang(callback.from_user)
+    await state.set_state(BotStates.waiting_for_table_text)
+    await callback.message.answer(i18n.get_text("start_table_prompt", lang), reply_markup=cancel_kb(lang))
+
+
+@dp.message(BotStates.waiting_for_table_text, F.text)
+async def table_text_handler(message: types.Message, state: FSMContext):
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+        return
+
+    raw_text = message.text.strip()
+    await db_service.log_event(message.from_user.id, "TABLE_TEXT_SUBMITTED", raw_text[:500])
+    sub_id = uuid.uuid4().hex[:8]
+    table_submissions[sub_id] = {
+        "user_id": message.from_user.id,
+        "username": message.from_user.username or "без_юзернейма",
+        "text": raw_text,
+    }
+    if config.ADMIN_ID:
+        try:
+            admin_msg = (
+                f"🔪 <b>Новый экземпляр на «Монтажный стол» (?start=table)</b>\n"
+                f"От: @{html.escape(message.from_user.username or 'no_username')} (ID <code>{message.from_user.id}</code>)\n\n"
+                f"<blockquote>{html.escape(raw_text[:2500])}</blockquote>"
+            )
+            admin_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="➕ В Банк Монтажного стола (Среда)", callback_data=f"table_vault:{sub_id}")
+            ]])
+            await bot.send_message(config.ADMIN_ID, admin_msg, parse_mode="HTML", reply_markup=admin_kb)
+        except Exception as e:
+            logger.error(f"Не удалось переслать текст Монтажного стола админу: {e}")
+
+    await state.set_state(BotStates.chatting)
+    await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+    await message.answer(
+        i18n.get_text("start_table_accepted", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text=i18n.get_text("btn_brief_start", lang), callback_data="brief_start")
+        ]]),
+    )
+
+
+@dp.callback_query(F.data.startswith("table_vault:"), F.from_user.id == config.ADMIN_ID)
+async def table_admin_action(callback: types.CallbackQuery):
+    _, _, sub_id = callback.data.partition(":")
+    sub = table_submissions.get(sub_id)
+    if not sub:
+        await callback.answer("Заявка устарела (бот перезапускался).", show_alert=True)
+        return
+    new_id = table_vault.append_table_patient(
+        niche="Заявка из бота",
+        title=f"Пациент @{sub['username']}",
+        raw_text=sub["text"],
+    )
+    await callback.answer(f"Добавлено в Банк Монтажного стола под #{new_id}!", show_alert=True)
+    await callback.message.reply(
+        f"✅ Экземпляр добавлен в <code>Банк_пациентов_Монтажный_стол.md</code> под номером <b>#{new_id}</b>.",
+        parse_mode="HTML",
+    )
+
+
+# --- БРИФ ПРОЕКТА: 5 вопросов + АВТОМАТИЧЕСКИЙ «ХОЛОДНЫЙ ДУШ» (ТОЧКА СЛИВА КАССЫ) ---
 BRIEF_SKIP_WORDS = {"-", "—", "нет", "пропустить", "skip", "no"}
 BRIEF_LABELS = {
     "niche": "Ниша и чем занимается",
@@ -346,6 +552,27 @@ BRIEF_LABELS = {
 def format_brief(brief: dict | None) -> str:
     lines = [f"- {BRIEF_LABELS[f]}: {brief[f]}" for f in BRIEF_FIELDS if brief and brief.get(f)]
     return "[БРИФ ПРОЕКТА — опирайся на него в первую очередь]\n" + "\n".join(lines) if lines else ""
+
+
+async def generate_cold_shower_diagnosis(answers: dict) -> str:
+    """
+    Генерирует снайперский диагноз «Точка слива кассы» (2–3 абзаца строго на «вы»)
+    сразу после заполнения 5 вопросов брифа.
+    """
+    brief_dump = "\n".join(f"- {BRIEF_LABELS[f]}: {answers.get(f) or 'не указано'}" for f in BRIEF_FIELDS)
+    system_prompt = (
+        f"{Prompts.LORE}\n\n"
+        "Ты в своём закрытом продюсерском кабинете. Клиент только что заполнил 5 пунктов первичного брифа.\n"
+        "Твоя задача — выдать ему «Холодный душ: Точка слива кассы» (строго 2–3 плотных абзаца, 900–1600 символов, без списков и без звёздочек *):\n"
+        "1. Обращайся к клиенту строго на «вы» — как жёсткий, проницательный и дорогой ментор-продюсер, который видит его бизнес насквозь.\n"
+        "2. В первом абзаце назови главную иллюзию или слепое пятно в его вводных: где его текущая упаковка, канал или формулировка ниши расходится с деньгами, которые он хочет зарабатывать.\n"
+        "3. Во втором абзаце покажи механику: почему его целевой клиент (с учётом названного чека и ниши) сейчас проходит мимо или покупает туго, и какой именно смысловой конфликт или угол позиционирования нужно поставить в центр.\n"
+        "4. В финальной фразе брось прямой вызов: предложи прямо сейчас прислать в ответ один его реальный текст (пост, шапку канала или оффер) на оставшийся бесплатный боевой разбор, чтобы пересобрать его на монтажном столе."
+    )
+    user_prompt = f"ВВОДНЫЕ БРИФА КЛИЕНТА:\n{brief_dump}\n\nВыдай диагноз «Точка слива кассы»."
+    diag = await llm_service.generate_standalone(system_prompt, user_prompt, temp=0.8)
+    diag = await polish_reply(llm_service, diag, user_prompt)
+    return humanize_punctuation(diag.replace("*", "").strip())
 
 
 async def start_brief(message: types.Message, state: FSMContext, lang: str):
@@ -375,7 +602,7 @@ async def brief_start_callback(callback: types.CallbackQuery, state: FSMContext)
 @dp.message(StateFilter(*BRIEF_STEPS), F.text)
 async def brief_answer(message: types.Message, state: FSMContext):
     lang = i18n.user_lang(message.from_user)
-    if message.text in i18n.variants("btn_main_menu"):
+    if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("brief_cancelled", lang), reply_markup=main_kb(lang))
         return
@@ -387,11 +614,45 @@ async def brief_answer(message: types.Message, state: FSMContext):
         await state.set_state(BRIEF_STEPS[step + 1])
         await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[step + 1]}", lang))
         return
+
     await db_service.save_brief(message.from_user.id, answers)
     await db_service.log_event(message.from_user.id, "BRIEF_SAVED")
     await state.update_data(brief_answers={})
     await state.set_state(BotStates.chatting)
     await message.answer(i18n.get_text("brief_saved", lang), reply_markup=main_kb(lang))
+
+    # Автоматический «Холодный душ: Точка слива кассы» сразу после 5-го ответа брифа
+    wait_msg = await message.answer(i18n.get_text("brief_cold_shower_wait", lang), parse_mode="Markdown")
+    try:
+        diagnosis = await generate_cold_shower_diagnosis(answers)
+        user = await db_service.get_user(message.from_user.id)
+        is_unlim = await db_service.has_unlimited(message.from_user.id)
+        if user and not is_unlim and user.credits > 0:
+            await db_service.update_balance(message.from_user.id, -1)
+        await db_service.log_event(message.from_user.id, "BRIEF_COLD_SHOWER", diagnosis[:1000])
+        data = await state.get_data()
+        history = data.get("history", [])
+        new_history = history + [
+            {"role": "user", "parts": [{"text": f"[БРИФ ЗАПОЛНЕН]\n{format_brief(answers)}"}]},
+            {"role": "model", "parts": [{"text": diagnosis}]},
+        ]
+        await state.update_data(history=new_history[-40:])
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
+        await send_smart_response(message, f"🔎 ТОЧКА СЛИВА КАССЫ (ПЕРВИЧНЫЙ ДИАГНОЗ):\n\n{diagnosis}")
+        await message.answer(
+            i18n.get_text("brief_cold_shower_footer", lang),
+            parse_mode="Markdown",
+            reply_markup=paywall_kb(lang),
+        )
+    except Exception as e:
+        logger.error(f"Cold shower error: {e}")
+        try:
+            await wait_msg.delete()
+        except Exception:
+            pass
 
 # --- РУБРИКА «РАЗБОР ПОДПИСЧИКА»: только администратор ---
 # /razbor <вопрос> → Аристарх пишет разбор → превью с кнопками → публикация в канал.
@@ -495,18 +756,25 @@ async def cmd_rest(message: types.Message, state: FSMContext):
     
     await message.answer(i18n.get_text("rest_btn_clicked", i18n.user_lang(message.from_user)), parse_mode="Markdown")
 
-# --- HANDLERS: BALANCE & STARS ---
+# --- HANDLERS: BALANCE, RUBLE PAYWALL, B2B QUALIFIER & STARS ---
+RUB_TARIFF_NAMES = {
+    "1490": "Пробный монтаж (15 разборов / 7 дн.)",
+    "4900": "Тариф «Эксперт» (60 разборов / 30 дн.)",
+    "9900": "Тариф «Продюсер» (200 разборов / 30 дн.)",
+}
+
+
 @dp.message(F.text.in_(i18n.variants("btn_balance")))
 async def show_balance(message: types.Message):
     await db_service.log_event(message.from_user.id, "CHECK_BALANCE")
     lang = i18n.user_lang(message.from_user)
-    
+
     user = await db_service.get_user(message.from_user.id)
     if not user:
         user = await db_service.create_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
-        
+
     is_unlim = await db_service.has_unlimited(message.from_user.id)
-    
+
     expired = await db_service.reset_balance_if_expired(user.id)
     if expired:
         user.credits = 0
@@ -518,14 +786,29 @@ async def show_balance(message: types.Message):
     else:
         expiry_info = i18n.get_text("subscription_until", lang, date=user.expires_at.strftime('%Y-%m-%d %H:%M')) if user.expires_at else ""
         text = i18n.get_text("balance_info", lang, credits=user.credits, expiry_info=expiry_info)
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=i18n.get_text("pkg_10", lang), callback_data="buy_10_0_1000")],
-        [InlineKeyboardButton(text=i18n.get_text("pkg_7d", lang), callback_data="buy_25_7_2000")],
-        [InlineKeyboardButton(text=i18n.get_text("pkg_30d", lang), callback_data="buy_100_30_5000")],
-        [InlineKeyboardButton(text=i18n.get_text("btn_promo", lang), callback_data="enter_promo")]
-    ])
-    await message.answer(text, reply_markup=kb, parse_mode="Markdown")
+
+    await message.answer(text, reply_markup=paywall_kb(lang), parse_mode="Markdown")
+
+
+@dp.callback_query(F.data == "show_stars_tariffs")
+async def show_stars_tariffs_cb(callback: types.CallbackQuery):
+    lang = i18n.user_lang(callback.from_user)
+    await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=stars_kb(lang))
+    except Exception:
+        await callback.message.answer("⭐️ Тарифы в Telegram Stars:", reply_markup=stars_kb(lang))
+
+
+@dp.callback_query(F.data == "show_rub_tariffs")
+async def show_rub_tariffs_cb(callback: types.CallbackQuery):
+    lang = i18n.user_lang(callback.from_user)
+    await callback.answer()
+    try:
+        await callback.message.edit_reply_markup(reply_markup=paywall_kb(lang))
+    except Exception:
+        await callback.message.answer("💳 Тарифы в рублях:", reply_markup=paywall_kb(lang))
+
 
 @dp.callback_query(F.data == "enter_promo")
 async def enter_promo_handler(callback: types.CallbackQuery, state: FSMContext):
@@ -535,6 +818,7 @@ async def enter_promo_handler(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.answer(i18n.get_text("promo_enter", lang), reply_markup=cancel_kb(lang))
     await callback.answer()
 
+
 @dp.message(BotStates.waiting_for_promo, F.text)
 async def process_promo(message: types.Message, state: FSMContext):
     lang = i18n.user_lang(message.from_user)
@@ -543,7 +827,7 @@ async def process_promo(message: types.Message, state: FSMContext):
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
         return
-        
+
     if config.PROMO_CODE and message.text.strip().lower() == config.PROMO_CODE.lower():
         await db_service.log_event(message.from_user.id, "ENTER_PROMO_SUCCESS", message.text)
         success = await db_service.activate_promo(message.from_user.id, config.PROMO_HOURS)
@@ -557,14 +841,147 @@ async def process_promo(message: types.Message, state: FSMContext):
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("promo_invalid", lang), reply_markup=main_kb(lang))
 
-@dp.callback_query(F.data.startswith("buy_"))
+
+@dp.callback_query(F.data.startswith("buy_rub_"))
+async def buy_rub_handler(callback: types.CallbackQuery):
+    _, _, credits_amount, days, price_rub = callback.data.split("_")
+    lang = i18n.user_lang(callback.from_user)
+    tariff_name = RUB_TARIFF_NAMES.get(price_rub, f"{credits_amount} разборов / {days} дн.")
+    await db_service.log_event(
+        callback.from_user.id,
+        "CLICK_BUY_RUB",
+        f"credits:{credits_amount}, days:{days}, rub:{price_rub}",
+    )
+
+    if config.YOOKASSA_PROVIDER_TOKEN:
+        prices = [LabeledPrice(label=tariff_name, amount=int(price_rub) * 100)]
+        await bot.send_invoice(
+            chat_id=callback.from_user.id,
+            title=i18n.get_text("invoice_title", lang),
+            description=f"{tariff_name} в продюсерском кабинете Аристарха Градова",
+            payload=callback.data,
+            provider_token=config.YOOKASSA_PROVIDER_TOKEN,
+            currency="RUB",
+            prices=prices,
+            start_parameter="topup_rub",
+        )
+        await callback.answer()
+        return
+
+    # Фоллбэк: если YOOKASSA_PROVIDER_TOKEN ещё не прописан в .env — мгновенная заявка админу с 1-клик выдачей
+    await callback.answer()
+    if config.ADMIN_ID:
+        try:
+            brief = await db_service.get_brief(callback.from_user.id)
+            brief_str = format_brief(brief) if brief else "(бриф не заполнен)"
+            admin_text = (
+                f"💳 <b>ЗАЯВКА НА РУБЛЁВЫЙ ТАРИФ ({price_rub} ₽)</b>\n"
+                f"Клиент: {html.escape(callback.from_user.full_name or '')} "
+                f"(@{html.escape(callback.from_user.username or 'no_username')}, ID <code>{callback.from_user.id}</code>)\n"
+                f"Пакет: <b>{html.escape(tariff_name)}</b>\n\n"
+                f"<blockquote>{html.escape(brief_str[:1500])}</blockquote>"
+            )
+            admin_kb = InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text=f"✅ Выдать {credits_amount} разб. / {days} дн.",
+                    callback_data=f"adm_grant:{callback.from_user.id}:{credits_amount}:{days}:{price_rub}",
+                )
+            ]])
+            await bot.send_message(config.ADMIN_ID, admin_text, parse_mode="HTML", reply_markup=admin_kb)
+        except Exception as e:
+            logger.error(f"Не удалось отправить рублёвую заявку админу: {e}")
+
+    await callback.message.answer(
+        i18n.get_text("rub_order_sent", lang, tariff_name=tariff_name, price_rub=price_rub),
+        parse_mode="Markdown",
+    )
+
+
+@dp.callback_query(F.data.startswith("adm_grant:"), F.from_user.id == config.ADMIN_ID)
+async def admin_grant_package(callback: types.CallbackQuery):
+    _, target_uid_s, credits_s, days_s, price_rub = callback.data.split(":")
+    target_uid, credits_to_add, add_days = int(target_uid_s), int(credits_s), int(days_s)
+    new_bal = await db_service.update_balance(target_uid, credits_to_add, add_days)
+    await db_service.log_event(target_uid, "ADMIN_GRANT_RUB", f"rub:{price_rub}, credits:{credits_to_add}, days:{add_days}")
+    await callback.answer(f"Пакет выдан! Баланс юзера: {new_bal}", show_alert=True)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.reply(
+        f"✅ Пакет (<b>+{credits_to_add} разборов на {add_days} дн.</b>) активирован для ID <code>{target_uid}</code>. "
+        f"Текущий баланс: <b>{new_bal}</b>.",
+        parse_mode="HTML",
+    )
+    try:
+        await bot.send_message(
+            target_uid,
+            i18n.get_text("payment_success", "ru", new_bal=new_bal),
+        )
+    except Exception as e:
+        logger.warning(f"Не удалось уведомить пользователя {target_uid} о выдаче пакета: {e}")
+
+
+# --- B2B-КВАЛИФИКАТОР: ИИ-ДВОЙНИК ПЕРВОГО ЛИЦА ПОД КЛЮЧ ---
+@dp.callback_query(F.data == "b2b_start")
+async def b2b_start_cb(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    lang = i18n.user_lang(callback.from_user)
+    await db_service.log_event(callback.from_user.id, "B2B_QUALIFIER_STARTED")
+    await state.set_state(BotStates.b2b_scale)
+    await callback.message.answer(i18n.get_text("b2b_intro", lang), parse_mode="Markdown", reply_markup=cancel_kb(lang))
+    await callback.message.answer(i18n.get_text("b2b_q_scale", lang))
+
+
+@dp.message(BotStates.b2b_scale, F.text)
+async def b2b_scale_handler(message: types.Message, state: FSMContext):
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+        return
+    await state.update_data(b2b_scale_answer=message.text.strip())
+    await state.set_state(BotStates.b2b_contact)
+    await message.answer(i18n.get_text("b2b_q_contact", lang))
+
+
+@dp.message(BotStates.b2b_contact, F.text)
+async def b2b_contact_handler(message: types.Message, state: FSMContext):
+    lang = i18n.user_lang(message.from_user)
+    if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+        return
+    data = await state.get_data()
+    scale_ans = data.get("b2b_scale_answer", "")
+    contact_ans = message.text.strip()
+    await db_service.log_event(message.from_user.id, "B2B_LEAD_SUBMITTED", f"{scale_ans[:300]} | {contact_ans[:200]}")
+
+    if config.ADMIN_ID:
+        try:
+            brief = await db_service.get_brief(message.from_user.id)
+            brief_str = format_brief(brief) if brief else "(бриф не заполнен)"
+            lead_card = (
+                f"🧬 <b>НОВЫЙ B2B-ЛИД: ИИ-ДВОЙНИК ПЕРВОГО ЛИЦА</b>\n"
+                f"От: {html.escape(message.from_user.full_name or '')} "
+                f"(@{html.escape(message.from_user.username or 'no_username')}, ID <code>{message.from_user.id}</code>)\n\n"
+                f"<b>1. Масштаб бизнеса и задача:</b>\n{html.escape(scale_ans[:1500])}\n\n"
+                f"<b>2. Прямой контакт:</b>\n{html.escape(contact_ans[:500])}\n\n"
+                f"<blockquote>{html.escape(brief_str[:1500])}</blockquote>"
+            )
+            await bot.send_message(config.ADMIN_ID, lead_card, parse_mode="HTML")
+        except Exception as e:
+            logger.error(f"Не удалось отправить B2B-лид админу: {e}")
+
+    await state.set_state(BotStates.chatting)
+    await message.answer(i18n.get_text("b2b_accepted", lang), parse_mode="Markdown", reply_markup=main_kb(lang))
+
+
+@dp.callback_query(F.data.startswith("buy_") & ~F.data.startswith("buy_rub_"))
 async def buy_stars(callback: types.CallbackQuery):
     _, credits_amount, days, stars = callback.data.split("_")
     await db_service.log_event(callback.from_user.id, "CLICK_BUY_STARS", f"credits:{credits_amount}, days:{days}, stars:{stars}")
 
     lang = i18n.user_lang(callback.from_user)
     prices = [LabeledPrice(label=i18n.get_text("invoice_label", lang, credits=credits_amount), amount=int(stars))]
-    
+
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=i18n.get_text("invoice_title", lang),
@@ -572,31 +989,41 @@ async def buy_stars(callback: types.CallbackQuery):
             "invoice_desc", lang, credits=credits_amount,
             period=i18n.get_text("invoice_period_days", lang, days=days) if int(days) > 0 else i18n.get_text("invoice_period_forever", lang),
         ),
-        payload=callback.data, 
-        provider_token="", 
+        payload=callback.data,
+        provider_token="",
         currency="XTR",
         prices=prices,
-        start_parameter="topup"
+        start_parameter="topup",
     )
     await callback.answer()
+
 
 @dp.pre_checkout_query()
 async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
 
+
 @dp.message(F.successful_payment)
 async def successful_payment(message: types.Message):
     pmt = message.successful_payment
-    _, credits_to_add, add_days, amount_stars = pmt.invoice_payload.split("_")
-    credits_to_add, add_days, amount_stars = int(credits_to_add), int(add_days), int(amount_stars)
+    parts = pmt.invoice_payload.split("_")
+    if parts[0] == "buy" and parts[1] == "rub":
+        _, _, credits_to_add, add_days, amount_paid = parts
+    else:
+        _, credits_to_add, add_days, amount_paid = parts
+    credits_to_add, add_days, amount_paid = int(credits_to_add), int(add_days), int(amount_paid)
     charge_id = pmt.telegram_payment_charge_id
-    
+
     if await db_service.check_tx_exists(charge_id):
         return
 
-    await db_service.log_event(message.from_user.id, "PAYMENT_SUCCESS", f"stars:{amount_stars}, credits:{credits_to_add}, days:{add_days}")
+    await db_service.log_event(
+        message.from_user.id,
+        "PAYMENT_SUCCESS",
+        f"currency:{pmt.currency}, amount:{amount_paid}, credits:{credits_to_add}, days:{add_days}",
+    )
     new_bal = await db_service.update_balance(message.from_user.id, credits_to_add, add_days)
-    await db_service.add_stars_transaction(message.from_user.id, amount_stars, credits_to_add, charge_id)
+    await db_service.add_stars_transaction(message.from_user.id, amount_paid, credits_to_add, charge_id)
     await message.answer(i18n.get_text("payment_success", i18n.user_lang(message.from_user), new_bal=new_bal))
 
 # --- HANDLERS: SETTINGS & RESET CONTEXT ---
@@ -814,7 +1241,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             msg = i18n.get_text("no_credits", lang)
             if expired:
                 msg = i18n.get_text("subscription_expired", lang)
-            await message.answer(msg)
+            await message.answer(msg, parse_mode="Markdown", reply_markup=paywall_kb(lang))
             return
 
     wait_msg = await message.answer(i18n.get_text("wait_thinking", lang))

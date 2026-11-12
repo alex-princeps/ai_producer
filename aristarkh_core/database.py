@@ -13,7 +13,7 @@ class User(Base):
     id = Column(BigInteger, primary_key=True)
     username = Column(String, nullable=True)
     full_name = Column(String, nullable=True)
-    credits = Column(Integer, default=10) # [FIX] 10 бесплатных первых запросов
+    credits = Column(Integer, default=2) # [FIX] 2 бесплатных разбора на старте: 1 авто-диагноз после брифа + 1 боевой тест текста
     expires_at = Column(DateTime, nullable=True) # [FIX] Дата сгорания подписки
     temperature = Column(Float, default=0.7)
     created_at = Column(DateTime, default=datetime.utcnow)

@@ -38,8 +38,10 @@ class Config:
         self.PROMO_CODE = (os.getenv("PROMO_CODE") or "").strip()  # пусто = промокоды отключены
         self.PROMO_HOURS = int(os.getenv("PROMO_HOURS", "24"))
 
-        # Admin ID
+        # Admin ID & Payment / Bot config
         self.ADMIN_ID = int(os.getenv("ADMIN_ID") or "0")  # задаётся только через .env
+        self.YOOKASSA_PROVIDER_TOKEN = (os.getenv("YOOKASSA_PROVIDER_TOKEN") or "").strip().replace('"', '')
+        self.BOT_USERNAME = (os.getenv("BOT_USERNAME") or "media_producer_bot").strip().lstrip("@")
 
         # Defaults
         self.SESSION_NAME = 'aristarkh_agent'

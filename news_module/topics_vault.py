@@ -131,3 +131,23 @@ def count_stats() -> tuple[int, int]:
     total = len(vault)
     unused = sum(1 for i in vault if not i.get("used"))
     return total, unused
+
+
+def append_vault_topic(question: str) -> int:
+    """Добавляет новый вопрос (например, одобренный админом из бота ?start=hall) в конец фонда."""
+    q_clean = (question or "").strip()
+    if not q_clean:
+        return 0
+    vault = load_vault()
+    next_id = max((int(i.get("id", 0)) for i in vault), default=0) + 1
+    vault.append({
+        "id": next_id,
+        "title": q_clean[:80],
+        "question": q_clean,
+        "published": False,
+        "used": False,
+        "used_at": None,
+    })
+    save_vault(vault)
+    logger.info(f"➕ [Topics Vault] Добавлена новая тема #{next_id} из бота: {q_clean[:60]}...")
+    return next_id

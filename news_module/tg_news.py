@@ -414,26 +414,33 @@ def filter_top_news(all_posts: list):
         return None
 
 
-def _is_vault_day() -> bool:
-    """Проверяет, выпадает ли сегодняшний слот на каждый 5-й пост из Золотого фонда (чтобы не жечь токены на парсинг)."""
-    if not os.path.exists(JSON_FILENAME):
-        return False
+def _special_rubric_today() -> str | None:
+    """
+    Проверяет по московскому дню недели, стоит ли сегодня спецрубрика телевизионной сетки
+    с непустым банком тем (чтобы не жечь токены на сбор новостей в Пт, Вс и при заполненном банке в Ср).
+    Если банк спецрубрики пуст — возвращает None (автоматический фоллбэк на обычный новостной выпуск).
+    """
     try:
-        with open(JSON_FILENAME, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        history = data.get("post_history", [])
-        since_vault = 0
-        for p in reversed(history):
-            if p.get("format") == "vault_question":
-                break
-            since_vault += 1
-        if since_vault < 4:
-            return False
-        from news_module.topics_vault import count_stats
-        _, unused = count_stats()
-        return unused > 0
+        msk_now = datetime.now(timezone(timedelta(hours=3)))
+        wd = msk_now.weekday()
+        if wd == 4:  # Пятница — «Вопрос из зрительного зала»
+            from news_module.topics_vault import count_stats
+            _, unused = count_stats()
+            if unused > 0:
+                return f"Пятница: «Вопрос из зрительного зала» (в очереди {unused} тем)"
+        elif wd == 6:  # Воскресенье — «Вскрытие кассы» / «Хроники Франкенштейна»
+            from news_module.b2b_vault import count_b2b_stats
+            _, unused = count_b2b_stats()
+            if unused > 0:
+                return f"Воскресенье: B2B-рубрика «Вскрытие кассы / Хроники Франкенштейна» (в очереди {unused} тем)"
+        elif wd == 2:  # Среда — «Монтажный стол: Было → Стало» (фоллбэк на новости, пока банк пуст)
+            from news_module.table_vault import count_table_stats
+            _, unused = count_table_stats()
+            if unused > 0:
+                return f"Среда: «Монтажный стол: Было → Стало» (в очереди {unused} пациентов)"
+        return None
     except Exception:
-        return False
+        return None
 
 
 def main():
@@ -445,8 +452,9 @@ def main():
     """
     print(f"🚀 Запуск сборщика новостей: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
-    if "--force" not in os.sys.argv and _is_vault_day():
-        print("🏛️ Сегодня день рубрики «Вопрос из зрительного зала» (каждый 5-й пост). Сбор новостей и трату токенов пропускаем.")
+    special = _special_rubric_today() if "--force" not in os.sys.argv else None
+    if special:
+        print(f"🏛️ Сегодня по сетке вещания — {special}. Сбор новостей и трату токенов пропускаем.")
         return
     
     # Проверка ключей

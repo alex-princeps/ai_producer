@@ -38,11 +38,11 @@ TELEGRAM_LIMIT = 4096
 QUOTE_MAX_CHARS = 500
 HISTORY_SIZE = 10
 
-# Для кого канал: от этого зависят примеры в выводе для читателя.
-# Типы бизнеса здесь не перечисляем: модель вставляла «салон, юрфирма, стройка» почти в каждый финал (аудит 25.10).
+# Для кого канал: 3 ядра платёжеспособной российской аудитории (S1: агентства/продакшены/PR,
+# S2: частная практика с высоким чеком, S3: фаундеры и эксперты с онлайн-продуктами).
 AUDIENCE = (
-    "авторы Telegram-каналов и блогеры, копирайтеры и маркетологи, эксперты со своим делом, "
-    "владельцы небольших продакшенов и малого бизнеса"
+    "владельцы продакшенов и digital-агентств, главреды и PR-директора, частнопрактикующие врачи, "
+    "адвокаты и B2B-консультанты, фаундеры с личным брендом и авторы экспертных медиа"
 )
 
 # Форматы поста: инструкция, диапазон длины (символы), можно ли опираться на байку из базы, вес
@@ -292,19 +292,23 @@ DAY_MENTION_PROBABILITY = 0.08  # в скольких постах можно м
 CALLBACK_PROBABILITY = 0.15    # в скольких постах можно сослаться на свой недавний пост
 PERSONAL_HOOK_PROBABILITY = 0.3  # личная заметка заканчивается вопросом к читателям
 
-# Вывод для читателя в конце поста: своими словами, без рубрик-меток (канал - голос живого автора)
+# Диагностическое зеркало в 3-м лице в финале новостного поста
 TAKEAWAY_RULE = (
-    "Закончи пост выводом для читателя: что конкретно он может сделать у себя с этим уроком. "
-    "Своим голосом, как продолжение мысли, без рубрик и меток вроде «Что забрать себе:», «Вывод:», «Мораль:», «Итог:». "
-    "Действие, а не мораль."
+    "Диагностическое зеркало в 3-м лице (финал поста): перекинь вскрытый закон кассы с героев новости "
+    "на российский рынок СТРОГО В ТРЕТЬЕМ ЛИЦЕ — как холодное наблюдение со стороны, без обращений к читателю "
+    "на «вы/ваш», без коучинга («советую», «уберите из презентации») и без бытовой мелочи («салон красоты», «пекарня», «стройка»). "
+    "Без рубрик и меток вроде «Вывод:», «Мораль:», «Итог:»."
 )
 
 
 def takeaway_rule(style: str | None, none: bool = False) -> str:
-    if none:
-        return ("Без отдельного совета читателю в конце: закончи мыслью, деталью или репликой. "
-                "Если вывод напрашивается, пусть он останется между строк.")
-    return TAKEAWAY_RULE + (f" Форма вывода в этом посте: {style}." if style else "")
+    if none or not style:
+        return (
+            "Финал поста: никаких советов малому бизнесу и поучений в стиле бизнес-коуча («уберите из презентации», "
+            "«если у вас салон красоты»). Закончи пост хлёстким продюсерским диагнозом, афористичным законом кассы "
+            "или точным приговором самому явлению."
+        )
+    return f"{TAKEAWAY_RULE} Форма финала в этом посте: {style}"
 RUBRIC_RE = re.compile(r"(?mi)^[ \t]*(?:что забрать себе|продюсерский вывод|выводы?|мораль|итог|резюме)[ \t]*:[ \t]*(\w?)")
 RUBRIC_FIX = "рубрика-метка в начале абзаца («Что забрать себе:», «Вывод:» и т.п.): перепиши этот вывод живой фразой без метки"
 
@@ -427,7 +431,7 @@ def build_system_prompt(
 1. Входи в текст сразу с удара по сути новости и её главного героя (назови компанию/человека прямо и зацепись за конкретную деталь или цифру), без бытовых зачинов («читаю», «смотрю», «стою у окна», «варю кофе»).
    Не начинай пост так же, как последние посты:
 {openings}
-2. Никаких советов малому бизнесу и поучений в стиле бизнес-коуча в финале («уберите из презентации», «если у вас салон красоты»): заканчивай хлёстким продюсерским диагнозом, циничным законом индустрии или точным приговором явлению.
+2. {takeaway_rule(takeaway_style, no_takeaway)}
 3. Избегай заезженных нейросетевых штампов: {banned}.
 4. Не ссылайся на «статью», «новость из канала», «базу знаний». Не повторяй сам пересказ новости — она уже показана в цитате над постом.
 5. О реальных людях — только публичные факты и твоя едкая продюсерская оценка со стороны. Не выдумывай личных встреч, разговоров и совместной работы с ними («я с ним работал», «мы снимали»).
@@ -592,7 +596,8 @@ async def _fix_foreign_ip(llm, text: str) -> str:
 
 
 async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_problems: list[str] | None = None,
-                  banned: list[str] | None = None, allow_hobby: bool = False) -> str:
+                  banned: list[str] | None = None, allow_hobby: bool = False,
+                  allow_second_person: bool = False) -> str:
     """
     Проверки после генерации: клише, выдуманные знакомства с реальными людьми, рубрики-метки вроде «Вывод:»,
     обрыв на полуслове. Если что-то не так - один проход переписывания. Выдуманное знакомство, личное,
@@ -615,6 +620,8 @@ async def _polish(llm, system_prompt: str, user_prompt: str, text: str, extra_pr
         problems.append(variety.BIO_ANCHOR_FIX)
     if RUBRIC_RE.search(text):
         problems.append(RUBRIC_FIX)
+    if not allow_second_person and variety.COACH_SLANG_RE.search(text):
+        problems.append(variety.COACH_SLANG_FIX)
     if problems:
         logger.info(f"♻️ [Post] Переписываем: {problems}")
         rewrite_prompt = (
@@ -926,7 +933,7 @@ async def generate_razbor(
     _ensure_generated(answer)
     bank = poetry.load_bank()
     extra = [] if _verse_status(answer, [], bank)[0] else [poetry.MISQUOTE_FIX]
-    answer = await _polish(llm, system_prompt, user_prompt, answer, extra)
+    answer = await _polish(llm, system_prompt, user_prompt, answer, extra, allow_second_person=True)
     if not _verse_status(answer, [], bank)[0]:
         raise ValueError("В разборе осталась неточная цитата из стихов")
 
@@ -954,18 +961,25 @@ HAM_PRODUCER_PROMPT = """
 """
 
 
-def render_vault_html(question: str, answer: str, cta: str | None = None) -> str:
-    """Рубрика «Вопрос из зрительного зала»: шапка и свёрнутая цитата визуально как у новости + ответ."""
+def render_vault_html(question: str, answer: str, bot_username: str = "media_producer_bot") -> str:
+    """Рубрика Пятницы «Вопрос из зрительного зала»: шапка, свёрнутая цитата, ответ и ремарка Бархатного каната (?start=hall)."""
     q = html.escape(_trim(question.strip(), 1500))
     head = f"<b>{HALL_QUESTION_TITLE}</b>\n<blockquote expandable>{q}</blockquote>\n\n"
-    return (head + _body_html(answer, cta))[:TELEGRAM_LIMIT]
+    bot_clean = (bot_username or "media_producer_bot").lstrip("@")
+    footer = (
+        f"\n\n<i>Каверзные вопросы к следующему разбору дежурный редактор забирает через "
+        f'<a href="https://t.me/{html.escape(bot_clean, quote=True)}?start=hall">@{html.escape(bot_clean)}</a></i>'
+    )
+    body_limit = TELEGRAM_LIMIT - len(head) - len(footer)
+    body = html.escape(_trim(answer.strip(), max(400, body_limit)))
+    return (head + body + footer)[:TELEGRAM_LIMIT]
 
 
 async def generate_vault_post(
     llm, rag_service, core_beliefs: list, topic_item: dict, cta_handle: str | None = None
 ) -> tuple[str, dict]:
     """
-    Рубрика «Вопрос из зрительного зала»: препарирование острой темы из золотого фонда Алекса.
+    Рубрика Пятницы «Вопрос из зрительного зала»: препарирование острой темы из золотого фонда Алекса.
     Голос: чистый «Хам-профессионал» без анестезии на температуре 0.95.
     """
     question = topic_item.get("question", "").strip()
@@ -986,12 +1000,142 @@ async def generate_vault_post(
     _ensure_generated(answer)
     answer = await _polish(llm, system_prompt, user_prompt, answer)
 
-    tail = cta_line(cta_handle) if cta_handle else None
-    html_post = render_vault_html(question, answer, tail)
+    bot_username = (cta_handle or os.getenv("BOT_USERNAME") or "media_producer_bot").lstrip("@")
+    html_post = render_vault_html(question, answer, bot_username=bot_username)
     meta = {
         "format": "vault_question",
         "topic_id": topic_item.get("id"),
         "title": topic_item.get("title"),
+        "chars": len(answer),
+        "text": answer,
+        "question": question,
+    }
+    return html_post, meta
+
+
+TABLE_POST_TITLE = "🔪 Монтажный стол · Клиника недели"
+
+
+def render_table_html(raw_text: str, answer: str, bot_username: str = "media_producer_bot") -> str:
+    """Рубрика Среды «Монтажный стол: Было → Стало» с кредитом Бархатного каната (?start=table)."""
+    bot_clean = (bot_username or "media_producer_bot").lstrip("@")
+    credit = (
+        f"<i>Экземпляр с операционного стола "
+        f'<a href="https://t.me/{html.escape(bot_clean, quote=True)}?start=table">@{html.escape(bot_clean)}</a>'
+        f" — имена и явки вырезаны, клиника типовая.</i>"
+    )
+    q = html.escape(_trim(raw_text.strip(), 1200))
+    head = f"<b>{TABLE_POST_TITLE}</b>\n{credit}\n<blockquote expandable>{q}</blockquote>\n\n"
+    body_limit = TELEGRAM_LIMIT - len(head)
+    body = html.escape(_trim(answer.strip(), max(400, body_limit)))
+    return (head + body)[:TELEGRAM_LIMIT]
+
+
+async def generate_table_post(
+    llm, rag_service, core_beliefs: list, patient_item: dict, cta_handle: str | None = None
+) -> tuple[str, dict]:
+    """
+    Рубрика Среды «Монтажный стол: Было → Стало»: хирургическое вскрытие и пересборка
+    обезличенного текста/оффера российского эксперта, агентства или клиники.
+    """
+    raw_text = patient_item.get("raw_text", "").strip()
+    niche = patient_item.get("niche", "Экспертный канал").strip()
+    title = patient_item.get("title", "Типовая клиника").strip()
+    rag_ctx = await rag_service.search(f"{niche} {raw_text[:300]}", top_k=2, enhance=False) if rag_service else ""
+    knowledge = (
+        "\n\n[СПРАВКА: ЧУЖИЕ ИНДУСТРИАЛЬНЫЕ КЕЙСЫ И МЕТОДОЛОГИЯ]\n"
+        "(Рассказчик во фрагментах ниже — другой продюсер, не ты; его шоу и каналы — НЕ твоя биография.)\n"
+        f"{rag_ctx}\n"
+    ) if rag_ctx else ""
+
+    system_prompt = (
+        HAM_PRODUCER_PROMPT
+        + "\nСегодня Среда — ты ведёшь в своём канале рубрику «Монтажный стол · Клиника недели» (формат «Было → Стало»).\n"
+        "Над твоим текстом в цитате уже показан обезличенный исходник («Было») реального российского игрока рынка.\n"
+        "Твоя задача — выдать цельный, злой и блестящий продюсерский разбор (1300–2300 символов) живыми абзацами без списков и звёздочек (*):\n"
+        "1) В первых абзацах поставь точный хирургический диагноз исходнику: где именно автор соврал себе, спрятался за трусливый канцелярит или инфоцыганский глянец, почему от этой формулировки у платёжеспособного клиента сводит скулы и сколько денег на этом сливается.\n"
+        "2) Во второй половине текста прямо на монтажном столе дай готовую пересборку («Стало») — напиши в кавычках «...» 1–2 конкретных переписанных абзаца или жёсткий хук/оффер здорового человека для этой же ниши и коротко припечатай, почему такая драматургия забирает кассу.\n"
+        "Никаких обращений к читателю на «вы» и никаких коуч-советов — ты препарируешь экземпляр на столе при полном зале."
+        + knowledge
+    )
+    user_prompt = (
+        f"НИША ЭКЗЕМПЛЯРА: {niche} ({title})\n"
+        f"ИСХОДНЫЙ ТЕКСТ НА ОПЕРАЦИОННОМ СТОЛЕ («БЫЛО»):\n«{raw_text}»\n\n"
+        "Вскрой эту клинику и дай прямо в тексте переписанный вариант («Стало») в кавычках."
+    )
+
+    answer = (await llm.generate_standalone(system_prompt, user_prompt, temp=0.95)).replace("*", "").strip()
+    _ensure_generated(answer)
+    answer = await _polish(llm, system_prompt, user_prompt, answer)
+
+    bot_username = (cta_handle or os.getenv("BOT_USERNAME") or "media_producer_bot").lstrip("@")
+    html_post = render_table_html(raw_text, answer, bot_username=bot_username)
+    meta = {
+        "format": "table_surgery",
+        "patient_id": patient_item.get("id"),
+        "niche": niche,
+        "title": title,
+        "chars": len(answer),
+        "text": answer,
+        "raw_text": raw_text,
+    }
+    return html_post, meta
+
+
+def render_b2b_html(kind: str, title: str, answer: str) -> str:
+    """Рубрика Воскресенья («Вскрытие кассы» / «Хроники Франкенштейна»): 0 ссылок в теле поста."""
+    icon = "🧬" if "франкенштейн" in kind.lower() else "🎬"
+    head = f"<b>{icon} {html.escape(kind)} · {html.escape(title)}</b>\n\n"
+    body_limit = TELEGRAM_LIMIT - len(head)
+    body = html.escape(_trim(answer.strip(), max(400, body_limit)))
+    return (head + body)[:TELEGRAM_LIMIT]
+
+
+async def generate_b2b_post(
+    llm, rag_service, core_beliefs: list, b2b_item: dict
+) -> tuple[str, dict]:
+    """
+    Рубрика Воскресенья («Вскрытие кассы» или «Хроники Франкенштейна»):
+    флагманская колонка для владельцев бизнеса, агентств и первых лиц.
+    Строгий запрет на IT/программистский жаргон и 0 ссылок в теле поста.
+    """
+    kind = b2b_item.get("kind", "Вскрытие кассы").strip()
+    title = b2b_item.get("title", "Анатомия медиакапитала").strip()
+    question = b2b_item.get("question", "").strip()
+    rag_ctx = await rag_service.search(question, top_k=2, enhance=False) if rag_service else ""
+    knowledge = (
+        "\n\n[СПРАВКА: ЧУЖИЕ ИНДУСТРИАЛЬНЫЕ КЕЙСЫ И МЕТОДОЛОГИЯ]\n"
+        "(Рассказчик во фрагментах ниже — другой продюсер, не ты; его шоу и каналы — НЕ твоя биография.)\n"
+        f"{rag_ctx}\n"
+    ) if rag_ctx else ""
+
+    system_prompt = (
+        HAM_PRODUCER_PROMPT
+        + f"\nСегодня Воскресенье — твоя флагманская продюсерская рубрика «{kind}».\n"
+        "ПРАВИЛА ЭТОЙ РУБРИКИ:\n"
+        "1. Ты говоришь как 55-летний телевизионный шоураннер и демиург с Патриарших, создающий медиакапитал и цифровых двойников первых лиц для крупного бизнеса.\n"
+        "2. КАТЕГОРИЧЕСКИЙ ЗАПРЕТ НА IT-ЖАРГОН: никогда не используй слова «Python», «RAG», «ChromaDB», «LLM», «промпт», «токен», «агент», «API», «SQLite», «крон», «пайплайн», «датасет». У тебя нет «программирования» — у тебя «цифровой слепок первого лица», «выжимка 80 часов закрытых планерок и голосовых», «виртуальный шоураннер», «автономная редакция», «интонационная матрица и список табу».\n"
+        "3. Не обращайся к читателю на «вы» и не давай советов в стиле бизнес-коуча. Пиши в третьем лице и от своего имени — как холодную анатомию денег, тщеславия и медиапроизводства.\n"
+        "4. Цельный авторский монолог живыми абзацами (1400–2400 символов), без списков, без подзаголовков и без звёздочек (*)."
+        + knowledge
+    )
+    user_prompt = (
+        f"РУБРИКА: {kind}\n"
+        f"ТЕМА КОЛОНКИ: {title}\n"
+        f"ФАКТУРА И ЗАДАЧА:\n{question}\n\n"
+        "Напиши воскресную колонку для своего авторского канала (заголовок в начале не дублируй — он уже вынесен в шапку)."
+    )
+
+    answer = (await llm.generate_standalone(system_prompt, user_prompt, temp=0.95)).replace("*", "").strip()
+    _ensure_generated(answer)
+    answer = await _polish(llm, system_prompt, user_prompt, answer)
+
+    html_post = render_b2b_html(kind, title, answer)
+    meta = {
+        "format": "b2b_sunday",
+        "b2b_id": b2b_item.get("id"),
+        "kind": kind,
+        "title": title,
         "chars": len(answer),
         "text": answer,
         "question": question,
