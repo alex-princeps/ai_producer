@@ -40,6 +40,7 @@ from aristarkh_core.assistant import AssistantService
 from semantic_memory import SemanticMemory
 from aristarkh_core.evolution_engine import PersonaEvolutionEngine
 from aristarkh_core.context_simulator import ContextSimulator  # [NEW] Симулятор среды обитания
+from news_module import columnist
 from news_module.post_builder import BOT_CTA_ENABLED, extract_url, generate_post, generate_razbor
 from aristarkh_core.humanize import humanize_punctuation
 import uuid
@@ -81,6 +82,71 @@ evolution_engine = PersonaEvolutionEngine(config.GOOGLE_API_KEY)
 # [КРИТИЧЕСКИЙ ФИКС] Абсолютный путь
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 AGENDA_PATH = os.path.join(BASE_DIR, "aristarkh_agenda.json")
+TG_NEWS_PATH = os.path.join(os.path.dirname(BASE_DIR), "tg_news.json")
+
+
+def _load_live_channel_and_day_context() -> tuple[dict, str]:
+    """
+    Единая жизнь канала и чат-бота (0 токенов, 0 сетевых вызовов):
+    читает реальный прожитый день из columnist_state.json и последний пост из tg_news.json.
+    """
+    base_spatial = ""
+    day = {}
+    try:
+        day = columnist.get_day(fetch=False)
+        slot = columnist.slot_of()
+        city_in = columnist.CITY_IN.get(day.get("city"), "В Москве")
+        scene = (day.get("scenes") or {}).get(slot) or ""
+        weather = (day.get("weather") or {}).get(slot) or (day.get("weather") or {}).get("morning") or ""
+        mood = day.get("mood", "")
+        mood_manner = columnist.MOOD_MANNER.get(mood, mood)
+        if scene:
+            base_spatial = (
+                f"{city_in}{', ' + weather if weather else ''}. "
+                f"Сейчас: {scene}. Фон настроения дня: {mood_manner}."
+            )
+    except Exception as e:
+        logger.debug(f"⚠️ [Sync] Не удалось прочитать columnist.get_day: {e}")
+
+    if not base_spatial:
+        base_spatial = ContextSimulator.get_current_context()
+
+    agenda = {}
+    if os.path.exists(TG_NEWS_PATH):
+        try:
+            with open(TG_NEWS_PATH, "r", encoding="utf-8") as f:
+                news_data = json.load(f)
+            history = news_data.get("post_history") or []
+            last_post = history[-1] if history else {}
+            cur_digest = news_data.get("current_digest") or {}
+            if last_post:
+                if last_post.get("format") == "vault_question":
+                    q_text = last_post.get("question") or last_post.get("title") or last_post.get("opening") or ""
+                    news_summary = f"Вопрос из зрительного зала: «{q_text[:240]}»"
+                else:
+                    raw_news = cur_digest.get("original_text") or last_post.get("hook") or last_post.get("opening") or ""
+                    news_summary = raw_news.strip().replace("\n", " ")[:240]
+                thesis = (last_post.get("text") or "").strip().replace("\n", " ")[:450]
+                agenda = {
+                    "focus_topic": last_post.get("title") or last_post.get("hook") or last_post.get("opening") or "Пост в канале",
+                    "news": news_summary,
+                    "daily_thesis": thesis,
+                    "published_at": (last_post.get("published_at") or "")[:10],
+                    "day_mood": day.get("mood", ""),
+                    "city": day.get("city", ""),
+                    "agenda_strength": 5,
+                }
+        except Exception as e:
+            logger.debug(f"⚠️ [Sync] Не удалось прочитать tg_news.json: {e}")
+
+    if not agenda and os.path.exists(AGENDA_PATH):
+        try:
+            with open(AGENDA_PATH, "r", encoding="utf-8") as f:
+                agenda = json.load(f)
+        except Exception:
+            pass
+
+    return agenda, base_spatial
 
 # Канал для авторских постов Аристарха (задаётся только через .env)
 CHANNEL_ID = os.getenv("TG_CHANNEL_ID", "")
@@ -800,15 +866,10 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     if brief_text:
         semantic_ctx = brief_text + ("\n\n" + semantic_ctx if semantic_ctx else "")
 
-    # === ЧИТАЕМ УТРЕННЮЮ ПОВЕСТКУ ===
-    agenda = {}
-    if os.path.exists(AGENDA_PATH):
-        try:
-            with open(AGENDA_PATH, 'r', encoding='utf-8') as f:
-                agenda = json.load(f)
-            logger.debug(f"📋 [Повестка] Загружена тема дня: {agenda.get('focus_topic', 'N/A')}")
-        except Exception:
-            pass
+    # === ЕДИНАЯ ЖИЗНЬ КАНАЛА И ЧАТ-БОТА (ПОВЕСТКА ПОСЛЕДНЕГО ПОСТА + ДЕНЬ КОЛУМНИСТА) ===
+    agenda, base_spatial_context = _load_live_channel_and_day_context()
+    if agenda:
+        logger.debug(f"📋 [Повестка канала] Загружен последний пост: {agenda.get('focus_topic', 'N/A')[:60]}")
 
     # === ВНУТРЕННЯЯ ШКАЛА ВРЕМЕНИ ===
     current_time = time.time()
@@ -837,9 +898,8 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
                 time_passed_str = f"Прошло {days} дней (МЕСЯЦЫ)! Юзер пропал на огромный срок."
 
     # ╔══════════════════════════════════════════════════════════════╗
-    # ║  [NEW] УМНАЯ АДАПТАЦИЯ ЛОКАЦИИ (Логика в коде, не в промпте)
+    # ║  [NEW] УМНАЯ АДАПТАЦИЯ ЛОКАЦИИ (Синхронно с columnist_state.json)
     # ╚══════════════════════════════════════════════════════════════╝
-    base_spatial_context = ContextSimulator.get_current_context()
     last_spatial_context = data.get("last_spatial_context", None)
     
     should_mention_location = False

@@ -42,4 +42,4 @@ class SemanticMemory:
             return data.get(str(user_id), [])
             
         facts = await asyncio.to_thread(_read)
-        return "\n".join([f"- {fact}" for fact in facts]) if facts else ""
+        return "\n".join([f"- {fact}" for fact in facts[-30:]]) if facts else ""
