@@ -451,7 +451,11 @@ class LLMService:
             if not self.http_session:
                 await session.close()
 
-    @retry(wait=wait_exponential(multiplier=1, min=2, max=10), stop=stop_after_attempt(3))
+    @retry(
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        stop=stop_after_attempt(3),
+        retry_error_callback=lambda _: "⚠️ Аристарх временно недоступен.",
+    )
     async def generate(self, system_prompt, user_query, rag_context, episodic_context, semantic_context, history_context, temp, image_data=None, search_results=""):
         contents_array = history_context.copy() if history_context else []
 
@@ -508,10 +512,12 @@ class LLMService:
                 else:
                     err = await resp.text()
                     logger.error(f"LLM API Error: {resp.status} - {err}")
+                    if resp.status == 429 or resp.status >= 500:
+                        raise RuntimeError(f"Transient LLM HTTP {resp.status}")
                     return "⚠️ Аристарх временно недоступен (API Error)."
         except Exception as e:
-            logger.error(f"Generate error: {e}")
-            return "⚠️ Аристарх временно недоступен."
+            logger.error(f"Generate error (will retry if attempts remain): {e}")
+            raise
         finally:
             if not self.http_session:
                 await session.close()
