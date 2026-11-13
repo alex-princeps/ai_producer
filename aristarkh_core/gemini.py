@@ -364,8 +364,15 @@ class LLMService:
         final_system_prompt = system_prompt + memory_block
 
         current_request_text = user_query
-        # [CRITICAL FIX] Инъекция задачи просит XML-теги
-        current_request_text += "\n\n[СИСТЕМНАЯ ЗАДАЧА ДЛЯ ЭТОГО ШАГА: Проанализируй этот запрос в контексте диалога и верни свои скрытые мысли СТРОГО в XML тегах <THOUGHTS> и <STRATEGY>. Отвечай только разметкой, никаких лишних разговоров.]"
+        # [CRITICAL FIX] Инъекция задачи просит XML-теги только для шага 1 (планирование ответа клиенту)
+        current_request_text += (
+            "\n\n[СИСТЕМНАЯ ЗАДАЧА ДЛЯ ШАГА 1 (СКРЫТАЯ РЕФЛЕКСИЯ): "
+            "Проанализируй реплику собеседника и верни свои скрытые мысли СТРОГО в XML тегах <THOUGHTS> и <STRATEGY>. "
+            "Внутри <STRATEGY> опиши ТОЛЬКО содержательный план твоего будущего устного ответа клиенту "
+            "(какую боль вскрыть, какой аргумент или драматургический приём применить, куда повести диалог). "
+            "ЗАПРЕЩЕНО писать внутри <STRATEGY> технические фразы вроде «Выполняю системную задачу», "
+            "«Возвращаю только внутренний монолог» или «Сам ответ Аристарха не генерирую».]"
+        )
         
         contents_array.append({"role": "user", "parts": [{"text": current_request_text}]})
         
@@ -377,7 +384,8 @@ class LLMService:
             "safetySettings": self.safety_settings,
             "generationConfig": {
                 "temperature": 0.8,
-                "maxOutputTokens": 2048  # [CRITICAL FIX] Увеличен с 1024 — даём модели место закрыть теги
+                "maxOutputTokens": 4096,
+                "thinkingConfig": {"thinkingBudget": 1024}
             }
         }
         
@@ -407,6 +415,12 @@ class LLMService:
                         
                         thoughts = thoughts_match.group(1).strip() if thoughts_match else ""
                         strategy = strategy_match.group(1).strip() if strategy_match else ""
+                        if strategy:
+                            strategy = re.sub(
+                                r"(?i)(выполняю\s+системную\s+задачу[^.\n]*\.?|возвращаю\s+только\s+внутренний\s+монолог[^.\n]*\.?|сам\s+ответ\s+аристарха\s+не\s+генерирую[^.\n]*\.?)",
+                                "",
+                                strategy,
+                            ).strip()
                         
                         if thoughts or strategy:
                             if not strategy:
@@ -475,7 +489,7 @@ class LLMService:
             "safetySettings": self.safety_settings,
             "generationConfig": {
                 "temperature": temp,
-                "maxOutputTokens": 8192
+                "maxOutputTokens": 16384
             }
         }
 
@@ -517,7 +531,24 @@ class LLMService:
             )
         
         parts = candidates[0].get('content', {}).get('parts', [])
-        full_text = self._clean_html("\n".join([p.get('text', '') for p in parts if not p.get('thought')]))
+        raw_joined = "\n".join([p.get('text', '') for p in parts if not p.get('thought')])
+        # Защита от утечки XML-тегов внутреннего монолога (<THOUGHTS>/<STRATEGY>) в публичный ответ:
+        if re.search(r'<(?:THOUGHTS|STRATEGY)>', raw_joined, re.IGNORECASE):
+            logger.warning("⚠️ [Gemini] Обнаружена утечка <THOUGHTS>/<STRATEGY> в публичном ответе — вырезаем блок монолога.")
+            stripped = re.sub(
+                r'^\s*<THOUGHTS>.*?</STRATEGY>\s*',
+                '',
+                raw_joined,
+                flags=re.DOTALL | re.IGNORECASE,
+            ).strip()
+            if stripped and not re.search(r'<(?:THOUGHTS|STRATEGY)>', stripped, re.IGNORECASE):
+                raw_joined = stripped
+            else:
+                raise ValueError("Leaked inner monologue (<THOUGHTS>/<STRATEGY>) without spoken response")
+        if re.search(r'(?i)(сам\s+ответ\s+аристарха\s+не\s+генерирую|возвращаю\s+только\s+внутренний\s+монолог)', raw_joined):
+            raise ValueError("Leaked monologue meta-instruction in spoken response")
+
+        full_text = self._clean_html(raw_joined)
         
         grounding = candidates[0].get('groundingMetadata')
         if grounding and grounding.get('searchEntryPoint'): 

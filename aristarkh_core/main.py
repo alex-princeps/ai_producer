@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import json
 import aiohttp 
 import nest_asyncio
@@ -185,8 +186,63 @@ BRIEF_STEPS = [getattr(BriefStates, f) for f in BRIEF_FIELDS]
 
 # --- [NEW] ГЛОБАЛЬНЫЕ БУФЕРЫ ДЛЯ DEBOUNCE (Анти-пулемет) ---
 debounce_tasks = {}
+long_input_tasks = {}
 user_message_buffers = {}
 user_image_buffers = {}
+
+# --- КЛАССИФИКАТОРЫ Нon-Linear ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЕЙ (0 ТОКЕНОВ) ---
+META_QUESTION_RE = re.compile(
+    r"(?i)(ты\s+бот|кто\s+ты|что\s+ты\s+(можешь|умеешь|делаешь)|чем\s+(ты\s+)?отличаешься|"
+    r"кто\s+тебя\s+(сделал|создал|написал)|как\s+ты\s+(работаешь|устроен)|"
+    r"ты\s+(нейросеть|ии|человек|живой)|об[её]ртка\s+над|обычный\s+(gpt|гпт|chatgpt|чатгпт)|"
+    r"зачем\s+(мне\s+)?(бриф|анкета|эти\s+вопросы)|куда\s+я\s+попал|что\s+это\s+за\s+бот)"
+)
+
+BRIEF_ESCAPE_RE = re.compile(
+    r"(?i)(опубликуете|всплыв[её]т|где\s+хранятся|куда\s+(уходят|идут)\s+данные|"
+    r"зачем\s+(вам|тебе|столько)\s+вопрос|почему\s+я\s+долж(ен|на)|не\s+буду\s+(заполнять|отвечать|называть)|"
+    r"без\s+(брифа|анкеты|вопросов)|хватит\s+вопросов|стоп\b.*(вопрос|бриф|анкет)|"
+    r"давай(те)?\s+без\s+вопросов|вот\s+мой\s+(пост|текст|черновик|кейс|оффер)|"
+    r"разбери(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс)|"
+    r"перепиши(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс))"
+)
+
+BRIEF_PRIVACY_WORD_RE = re.compile(
+    r"(?i)(?:(?<!\w)(?:nda|н\.д\.а\.|нда)(?!\w)|конфиденциальн|адвокатск\w+\s+тайн|врачебн\w+\s+тайн)"
+)
+BRIEF_PRIVACY_CHALLENGE_RE = re.compile(
+    r"(?i)(\?|почему|зачем|где\b|кто\b|кому\b|как\s+вы|гарант|не\s+могу|не\s+буду|боюсь|опасаюсь|подождите|стоп\b)"
+)
+
+OBJECTION_OR_CRITIQUE_RE = re.compile(
+    r"(?i)(херн[яию]|хуйн[яию]|фигн[яию]|чушь|вода|общие\s+слова|не\s+понял|не\s+то\b|"
+    r"переделай|перепиши|слабо|банальн|штамп|инфоцыган|дорого|за\s+что\s+(тут\s+)?платить|"
+    r"почему\s+так\s+дорого|за\s+что\s+\d+|ни\s+о\s+ч[её]м|так\s+я\s+и\s+сам|бред)"
+)
+
+
+def _is_meta_question(text: str | None) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    return len(t) < 480 and bool(META_QUESTION_RE.search(t))
+
+
+def _is_brief_interruption(text: str | None, current_field: str | None = None) -> bool:
+    if not text:
+        return False
+    t = text.strip()
+    if _is_meta_question(t) or BRIEF_ESCAPE_RE.search(t):
+        return True
+    # Упоминание NDA/конфиденциальности прерывает бриф только если это встречный вопрос или отказ,
+    # а не штатное перечисление табу на шаге 5 (constraints):
+    if BRIEF_PRIVACY_WORD_RE.search(t) and BRIEF_PRIVACY_CHALLENGE_RE.search(t):
+        if current_field != "constraints" or "?" in t:
+            return True
+    # Если вместо короткого ответа на пункт брифа юзер вставил целый черновик статьи/поста (>700 знаков)
+    if len(t) > 700:
+        return True
+    return False
 
 # --- KEYBOARDS ---
 def main_kb(lang: str) -> ReplyKeyboardMarkup:
@@ -383,7 +439,9 @@ async def cmd_start(message: types.Message, state: FSMContext, command: CommandO
         )
         return
 
-    welcome_text = i18n.get_text("start_message", lang)
+    # Разделяем тёплый вход из закрепа канала (?start=pin) и холодный вход мимо канала (/start)
+    welcome_key = "start_message" if payload == "pin" else "start_cold_message"
+    welcome_text = i18n.get_text(welcome_key, lang)
     await state.set_state(BotStates.chatting)
     await message.answer(welcome_text, reply_markup=main_kb(lang), parse_mode="Markdown")
     await message.answer(
@@ -405,6 +463,11 @@ async def hall_question_handler(message: types.Message, state: FSMContext):
         return
 
     q_text = message.text.strip()
+    # Если юзер вместо вопроса в пятничную рубрику задаёт мета-вопрос боту ("ты бот?") или кидает черновик на разбор
+    if _is_meta_question(q_text) or BRIEF_ESCAPE_RE.search(q_text) or len(q_text) > 1200:
+        await state.set_state(BotStates.chatting)
+        await chat_handler(message, state)
+        return
     await db_service.log_event(message.from_user.id, "HALL_QUESTION_SUBMITTED", q_text[:500])
     sub_id = uuid.uuid4().hex[:8]
     hall_submissions[sub_id] = {
@@ -487,6 +550,10 @@ async def table_text_handler(message: types.Message, state: FSMContext):
         return
 
     raw_text = message.text.strip()
+    if _is_meta_question(raw_text):
+        await state.set_state(BotStates.chatting)
+        await chat_handler(message, state)
+        return
     await db_service.log_event(message.from_user.id, "TABLE_TEXT_SUBMITTED", raw_text[:500])
     sub_id = uuid.uuid4().hex[:8]
     table_submissions[sub_id] = {
@@ -577,6 +644,16 @@ async def generate_cold_shower_diagnosis(answers: dict) -> str:
 
 async def start_brief(message: types.Message, state: FSMContext, lang: str):
     await db_service.log_event(message.chat.id, "BRIEF_STARTED")
+    existing = await db_service.get_brief(message.chat.id) or {}
+    missing_indices = [idx for idx, f in enumerate(BRIEF_FIELDS) if not existing.get(f)]
+    # Если бриф был поставлен на паузу на полпути (заполнена часть полей, но не все 5) — продолжаем с первого незаполненного:
+    if existing and 0 < len(missing_indices) < len(BRIEF_FIELDS):
+        next_idx = missing_indices[0]
+        await state.set_state(BRIEF_STEPS[next_idx])
+        await state.update_data(brief_answers=dict(existing))
+        await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
+        await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[next_idx]}", lang))
+        return
     await state.set_state(BRIEF_STEPS[0])
     await state.update_data(brief_answers={})
     await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
@@ -606,9 +683,21 @@ async def brief_answer(message: types.Message, state: FSMContext):
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("brief_cancelled", lang), reply_markup=main_kb(lang))
         return
+
     step = [s.state for s in BRIEF_STEPS].index(await state.get_state())
+    current_field = BRIEF_FIELDS[step]
     answers = (await state.get_data()).get("brief_answers", {})
-    answers[BRIEF_FIELDS[step]] = "" if message.text.strip().lower() in BRIEF_SKIP_WORDS else message.text
+    # Если юзер перебил анкету встречным вопросом (NDA/конфиденциальность/кто ты) или сразу кинул пост на разбор:
+    if _is_brief_interruption(message.text, current_field=current_field):
+        if answers:
+            await db_service.save_brief(message.from_user.id, answers)
+            await db_service.log_event(message.from_user.id, "BRIEF_PARTIAL_SAVED", f"fields:{list(answers.keys())}")
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("brief_paused_for_chat", lang), reply_markup=main_kb(lang), parse_mode="Markdown")
+        await chat_handler(message, state)
+        return
+
+    answers[current_field] = "" if message.text.strip().lower() in BRIEF_SKIP_WORDS else message.text
     if step + 1 < len(BRIEF_STEPS):
         await state.update_data(brief_answers=answers)
         await state.set_state(BRIEF_STEPS[step + 1])
@@ -1166,17 +1255,25 @@ async def chat_handler(message: types.Message, state: FSMContext):
         await wait_msg.delete()
         user_query += file_context
 
-    # Режим «роман Толстого»
+    # Режим «роман Толстого» (10К+ символов или серия сообщений > 3500 знаков) с авто-таймером 3.0 сек
+    user_id = message.from_user.id
+    pending_short = user_message_buffers.pop(user_id, "")
+    if pending_short:
+        user_query = f"{pending_short}\n{user_query}".strip()
+    if user_id in debounce_tasks and not debounce_tasks[user_id].done():
+        debounce_tasks[user_id].cancel()
+
     if len(user_query) > config.LONG_TEXT_THRESHOLD:
-        await db_service.log_event(message.from_user.id, "LONG_INPUT_TRIGGERED")
+        await db_service.log_event(user_id, "LONG_INPUT_TRIGGERED", f"chars:{len(user_query)}")
         await state.update_data(text_buffer=user_query, img_buffer=image_data)
         await state.set_state(BotStates.waiting_for_long_input)
         await message.answer(i18n.get_text("long_input_mode", lang), reply_markup=long_input_kb(lang), parse_mode="Markdown")
+        if user_id in long_input_tasks and not long_input_tasks[user_id].done():
+            long_input_tasks[user_id].cancel()
+        long_input_tasks[user_id] = asyncio.create_task(trigger_long_input_processing(message, state, user_id))
         return
 
     # === [NEW] БУФЕРИЗАЦИЯ И DEBOUNCE ===
-    user_id = message.from_user.id
-    
     current_text = user_message_buffers.get(user_id, "")
     if current_text:
         user_message_buffers[user_id] = f"{current_text}\n{user_query}".strip()
@@ -1186,18 +1283,50 @@ async def chat_handler(message: types.Message, state: FSMContext):
     if image_data:
         user_image_buffers[user_id] = image_data
 
-    if user_id in debounce_tasks and not debounce_tasks[user_id].done():
-        debounce_tasks[user_id].cancel()
-        
     debounce_tasks[user_id] = asyncio.create_task(trigger_processing(message, state, user_id))
+
+
+async def trigger_long_input_processing(message: types.Message, state: FSMContext, user_id: int):
+    """Автоматический запуск разбора большого текста (10К+ символов) через 3.0 сек тишины, даже если юзер не нажал «Готово»."""
+    try:
+        await asyncio.sleep(3.0)
+    except asyncio.CancelledError:
+        return
+
+    current_state = await state.get_state()
+    if current_state != BotStates.waiting_for_long_input.state:
+        return
+
+    data = await state.get_data()
+    full_text = (data.get("text_buffer") or "").strip()
+    img_data = data.get("img_buffer", None)
+    if not full_text and not img_data:
+        return
+
+    lang = i18n.user_lang(message.from_user)
+    await db_service.log_event(user_id, "LONG_INPUT_AUTO_FINISHED", f"chars:{len(full_text)}")
+    await message.answer(i18n.get_text("doc_accepted", lang), reply_markup=main_kb(lang))
+    await state.update_data(text_buffer="", img_buffer=None)
+
+    await state.set_state(BotStates.generating)
+    try:
+        await process_ai_response(message, state, full_text, img_data)
+    finally:
+        st = await state.get_state()
+        if st == BotStates.generating.state:
+            await state.set_state(BotStates.chatting)
+
 
 @dp.message(BotStates.waiting_for_long_input)
 async def long_input_handler(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
     data = await state.get_data()
     lang = i18n.user_lang(message.from_user)
     
     if message.text and message.text.strip().lower() in DONE_WORDS:
-        await db_service.log_event(message.from_user.id, "LONG_INPUT_FINISHED")
+        if user_id in long_input_tasks and not long_input_tasks[user_id].done():
+            long_input_tasks[user_id].cancel()
+        await db_service.log_event(user_id, "LONG_INPUT_FINISHED")
         full_text = data.get("text_buffer", "")
         img_data = data.get("img_buffer", None)
         
@@ -1213,16 +1342,21 @@ async def long_input_handler(message: types.Message, state: FSMContext):
                 await state.set_state(BotStates.chatting)
         return
     elif message.text in i18n.variants("btn_cancel"):
-        await db_service.log_event(message.from_user.id, "LONG_INPUT_CANCELLED")
+        if user_id in long_input_tasks and not long_input_tasks[user_id].done():
+            long_input_tasks[user_id].cancel()
+        await db_service.log_event(user_id, "LONG_INPUT_CANCELLED")
         await state.update_data(text_buffer="", img_buffer=None)
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("cancelled", lang), reply_markup=main_kb(lang))
         return
 
-    await db_service.log_event(message.from_user.id, "LONG_INPUT_APPEND")
+    await db_service.log_event(user_id, "LONG_INPUT_APPEND")
     current_buffer = data.get("text_buffer", "")
     new_buffer = current_buffer + "\n" + (message.text or "")
     await state.update_data(text_buffer=new_buffer)
+    if user_id in long_input_tasks and not long_input_tasks[user_id].done():
+        long_input_tasks[user_id].cancel()
+    long_input_tasks[user_id] = asyncio.create_task(trigger_long_input_processing(message, state, user_id))
 
 
 async def process_ai_response(message: types.Message, state: FSMContext, user_query: str, image_data: dict = None):
@@ -1231,18 +1365,46 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     if not user:
         user = await db_service.create_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
 
+    data = await state.get_data()
+    history = data.get("history", [])
     is_unlim = await db_service.has_unlimited(message.from_user.id)
-    
-    if not is_unlim:
+
+    # Проверяем, является ли запрос стартовым мета-вопросом («ты бот? чем лучше GPT?») или вопросом про NDA/конфиденциальность
+    is_free_meta = (
+        not data.get("meta_question_free_used")
+        and len(user_query.strip()) < 550
+        and (
+            _is_meta_question(user_query)
+            or bool(re.search(r"(?i)(конфиденциальн|nda|н\.?д\.?а\.?|опубликуете|всплыв[её]т|где\s+хранятся)", user_query))
+        )
+    )
+    if is_free_meta:
+        await state.update_data(meta_question_free_used=True)
+        await db_service.log_event(message.from_user.id, "FREE_META_QUESTION", user_query[:300])
+
+    is_objection_grace = False
+    if not is_unlim and not is_free_meta:
         expired = await db_service.reset_balance_if_expired(message.from_user.id)
         
         if user.credits < 1:
-            await db_service.log_event(message.from_user.id, "OUT_OF_CREDITS")
-            msg = i18n.get_text("no_credits", lang)
-            if expired:
-                msg = i18n.get_text("subscription_expired", lang)
-            await message.answer(msg, parse_mode="Markdown", reply_markup=paywall_kb(lang))
-            return
+            # Если у клиента 0 кредитов, но он пишет возражение/претензию («это херня/вода/дорого/переделай») по текущему разбору —
+            # даём 1 страховочный ответ «за счёт заведения» вместо тупого пейволла в лицо
+            if (
+                not expired
+                and not data.get("objection_grace_used")
+                and len(history) >= 2
+                and (len(user_query.strip()) < 1400 or bool(OBJECTION_OR_CRITIQUE_RE.search(user_query)))
+            ):
+                is_objection_grace = True
+                await state.update_data(objection_grace_used=True)
+                await db_service.log_event(message.from_user.id, "OBJECTION_GRACE_USED", user_query[:400])
+            else:
+                await db_service.log_event(message.from_user.id, "OUT_OF_CREDITS")
+                msg = i18n.get_text("no_credits", lang)
+                if expired:
+                    msg = i18n.get_text("subscription_expired", lang)
+                await message.answer(msg, parse_mode="Markdown", reply_markup=paywall_kb(lang))
+                return
 
     wait_msg = await message.answer(i18n.get_text("wait_thinking", lang))
 
@@ -1395,6 +1557,22 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         spatial_context=spatial_context,
         search_results=search_results
     )
+    if is_free_meta:
+        sys_prompt += (
+            "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: МЕТА-ВОПРОС ИЛИ СОМНЕНИЕ КЛИЕНТА]\n"
+            "Собеседник проверяет, кто ты такой, чем отличаешься от обычного ChatGPT/Claude, либо беспокоится о конфиденциальности/NDA.\n"
+            "1. Ответь строго на «вы», хлёстко и по-продюсерски (2 коротких абзаца, без воды): объясни, что базовый GPT пишет стерильную вежливую вату и гладит эго, а ты — ИИ-продюсер с оптикой 55-летнего телевизионного шоураннера, который ищет слив кассы и переписывает мёртвые тексты в деньги («Было -> Стало»).\n"
+            "2. Если вопрос про конфиденциальность/NDA или публичный разбор — твёрдо зафиксируй: всё, что пишется в этом кабинете и в брифе, строго конфиденциально, хранится только в вашем закрытом досье и никогда не попадает в публичный канал (в среду на «Монтажный стол» попадают только те тексты, которые авторы сами отправляют специальной кнопкой на анонимную порку с вырезанием всех имён).\n"
+            "3. Заверши прямым вызовом: предложи прямо сейчас без всяких анкет скинуть в чат любой один пост, оффер или шапку канала на пробу (либо нажать /brief)."
+        )
+    elif is_objection_grace:
+        sys_prompt += (
+            "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: ЖЁСТКОЕ ВОЗРАЖЕНИЕ ИЛИ КРИТИКА ОТ КЛИЕНТА]\n"
+            "Собеседник недоволен предыдущим ответом (считает его общим/водой/слишком дорогим или требует переделать конкретный кусок).\n"
+            "1. Никаких обид, оправданий или канцелярщины. Прими удар спокойно и с достоинством взрослого шоураннера (строго на «вы»).\n"
+            "2. Если претензия к тексту — без прелюдий выдай максимально плотный, злой и конкретный переписанный вариант («Стало») с цифрами и нервом, убрав любую воду.\n"
+            "3. Если претензия к цене тарифа (1 490 / 4 900 / 9 900 ₽ или B2B-двойник) — покажи математику окупаемости: один пересобранный пост или оффер отбивает стоимость месячного абонемента с первой же заявки, а живой шеф-редактор такого уровня стоит от 150 000 ₽ в месяц."
+        )
     
     failed = False  # при сбое генерации запрос не списываем
     try:
@@ -1469,10 +1647,24 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             f"interaction:{interaction_count}, history_len:{len(new_history)}"
         )
     
-    if not is_unlim and not failed:
-        await db_service.update_balance(message.from_user.id, -1)
+    new_bal = user.credits
+    if not is_unlim and not failed and not is_free_meta and not is_objection_grace:
+        new_bal = await db_service.update_balance(message.from_user.id, -1)
 
     await send_smart_response(message, response_text)
+
+    if is_objection_grace and not failed:
+        await message.answer(
+            i18n.get_text("grace_credits_footer", lang),
+            parse_mode="Markdown",
+            reply_markup=paywall_kb(lang),
+        )
+    elif not is_unlim and not failed and not is_free_meta and new_bal <= 0:
+        await message.answer(
+            i18n.get_text("no_credits", lang),
+            parse_mode="Markdown",
+            reply_markup=paywall_kb(lang),
+        )
 
     # Один раз за сессию напоминаем про бриф тем, кто его ещё не заполнил
     if not brief and not failed and not data.get("brief_hint_shown"):

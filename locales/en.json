@@ -90,5 +90,8 @@
   "b2b_intro": "🧬 **Turnkey Executive AI Twin / Corporate Media Asset (B2B)**\n\nAnswer 2 short questions for producer qualification:",
   "b2b_q_scale": "1/2. Describe your business, revenue scale, and what goal your digital twin should solve:",
   "b2b_q_contact": "2/2. Leave your direct contact (@username or phone/WhatsApp) and preferred time for a 15-minute call:",
-  "b2b_accepted": "✅ **Dossier forwarded directly to the Chief Producer.** We will review your inputs and reach out shortly."
+  "b2b_accepted": "✅ **Dossier forwarded directly to the Chief Producer.** We will review your inputs and reach out shortly.",
+  "start_cold_message": "Hello. You are in the private office of Aristarkh Gradov — TV showrunner and media producer.\n\nYou have **2 free combat reviews**. You can either drop any post/bio/offer directly into this chat right now for a «Before → After» rewrite, or take the 5-question Brief below (0 credits) for a full project diagnosis:",
+  "grace_credits_footer": "🎯 **I rebuilt the disputed section on the house (bonus grace review).**\n\nYour free demo limit is now complete. Choose a working plan below to continue:",
+  "brief_paused_for_chat": "⏸ *Brief paused (your previous answers are saved). Answering your question directly:*"
 }
