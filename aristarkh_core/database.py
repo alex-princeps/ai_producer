@@ -83,6 +83,10 @@ class ProjectFolder(Base):
     history_json = Column(Text, default="[]")
     updated_at = Column(DateTime, default=datetime.utcnow)
 
+    @property
+    def slot_index(self) -> int:
+        return self.slot_num or 1
+
 
 class DatabaseService:
     def __init__(self, db_url):

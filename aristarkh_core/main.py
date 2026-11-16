@@ -893,8 +893,9 @@ async def proj_new_callback(callback: types.CallbackQuery, state: FSMContext):
     cur_answers = (await state.get_data()).get("brief_answers", {})
     if cur_answers:
         await db_service.save_brief(uid, cur_answers)
-    new_proj, cur_cnt, max_cnt = await db_service.create_new_project(uid)
+    new_proj, max_cnt = await db_service.create_new_project(uid)
     if new_proj is None:
+        cur_cnt = max_cnt
         await db_service.log_event(uid, "PROJECT_LIMIT_REACHED", f"count:{cur_cnt}, max:{max_cnt}")
         await state.set_state(BotStates.chatting)
         await callback.message.answer(
