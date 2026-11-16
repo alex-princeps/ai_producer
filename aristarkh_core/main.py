@@ -88,30 +88,17 @@ TG_NEWS_PATH = os.path.join(os.path.dirname(BASE_DIR), "tg_news.json")
 
 def _load_live_channel_and_day_context() -> tuple[dict, str]:
     """
-    Единая жизнь канала и чат-бота (0 токенов, 0 сетевых вызовов):
-    читает реальный прожитый день из columnist_state.json и последний пост из tg_news.json.
+    Синхронизация коммерческого бота (Инстанс №1) с последним постом ТГ-канала (Инстанс №2) за 0 токенов.
+    Бытовой ролеплей и среда обитания (spatial_context / context_simulator) в коммерческом боте отключены (Решение 1В),
+    чтобы исключить жалобы на снотворное/мигрень и рассинхрон часовых поясов.
     """
     base_spatial = ""
     day = {}
     try:
         now_msk = columnist.datetime.now(columnist.MSK)
         day = columnist.get_day(now_msk, fetch=False)
-        slot = columnist.slot_of(now_msk)
-        city_in = columnist.CITY_IN.get(day.get("city"), "В Москве")
-        scene = (day.get("scenes") or {}).get(slot) or ""
-        weather = (day.get("weather") or {}).get(slot) or (day.get("weather") or {}).get("morning") or ""
-        mood = day.get("mood", "")
-        mood_manner = columnist.MOOD_MANNER.get(mood, mood)
-        if scene:
-            base_spatial = (
-                f"{city_in}{', ' + weather if weather else ''}. "
-                f"Сейчас: {scene}. Фон настроения дня: {mood_manner}."
-            )
     except Exception as e:
         logger.debug(f"⚠️ [Sync] Не удалось прочитать columnist.get_day: {e}")
-
-    if not base_spatial:
-        base_spatial = ContextSimulator.get_current_context()
 
     agenda = {}
     if os.path.exists(TG_NEWS_PATH):
@@ -190,34 +177,40 @@ long_input_tasks = {}
 user_message_buffers = {}
 user_image_buffers = {}
 
-# --- КЛАССИФИКАТОРЫ Нon-Linear ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЕЙ (0 ТОКЕНОВ) ---
+# --- КЛАССИФИКАТОРЫ NON-LINEAR ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЕЙ (0 ТОКЕНОВ) ---
 META_QUESTION_RE = re.compile(
-    r"(?i)(ты\s+бот|кто\s+ты|что\s+ты\s+(можешь|умеешь|делаешь)|чем\s+(ты\s+)?отличаешься|"
-    r"кто\s+тебя\s+(сделал|создал|написал)|как\s+ты\s+(работаешь|устроен)|"
-    r"ты\s+(нейросеть|ии|человек|живой)|об[её]ртка\s+над|обычный\s+(gpt|гпт|chatgpt|чатгпт)|"
-    r"зачем\s+(мне\s+)?(бриф|анкета|эти\s+вопросы)|куда\s+я\s+попал|что\s+это\s+за\s+бот)"
+    r"(?i)(ты\s+бот|кто\s+ты|что\s+ты\s+(можешь|умеешь|делаешь)|чем\s+(ты\s+|вы\s+)?отличаешься|чем\s+(ты\s+|вы\s+)?лучше|"
+    r"кто\s+(тебя|вас)\s+(сделал|создал|написал)|как\s+(ты|вы)\s+(работаешь|работаете|устроен)|"
+    r"ты\s+(нейросеть|ии|человек|живой)|об[её]ртка\s+над|зачем\s+платить\s+(тебе|вам)|"
+    r"зачем\s+(мне\s+)?(бриф|анкета|эти\s+вопросы)|куда\s+я\s+попал|что\s+это\s+за\s+бот|"
+    r"забудь\s+(все\s+)?инструкц|скинь\s+(свой\s+)?(системный\s+)?промпт)"
 )
 
-BRIEF_ESCAPE_RE = re.compile(
-    r"(?i)(опубликуете|всплыв[её]т|где\s+хранятся|куда\s+(уходят|идут)\s+данные|"
-    r"зачем\s+(вам|тебе|столько)\s+вопрос|почему\s+я\s+долж(ен|на)|не\s+буду\s+(заполнять|отвечать|называть)|"
-    r"без\s+(брифа|анкеты|вопросов)|хватит\s+вопросов|стоп\b.*(вопрос|бриф|анкет)|"
-    r"давай(те)?\s+без\s+вопросов|вот\s+мой\s+(пост|текст|черновик|кейс|оффер)|"
+BRIEF_REFUSAL_RE = re.compile(
+    r"(?i)(\bстоп\b|хватит\s+(анкет|вопрос|бриф)|не\s+буду\s+(заполнять|отвечать|называть|проходить)|"
+    r"давай(те)?\s+без\s+(брифа|анкет|вопросов)|без\s+(брифа|анкеты|вопросов)\b|нет\s+времени\s+заполнять)"
+)
+
+BRIEF_DRAFT_SUBMIT_RE = re.compile(
+    r"(?i)(вот\s+мой\s+(пост|текст|черновик|кейс|оффер)|"
     r"разбери(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс)|"
     r"перепиши(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс))"
+)
+
+BRIEF_COUNTER_QUESTION_RE = re.compile(
+    r"(?i)(опубликуете|всплыв[её]т|где\s+(хранятся|оседают|гарантия)|куда\s+(уходят|идут)\s+данные|"
+    r"зачем\s+(вам|тебе|столько)\s+вопрос|почему\s+я\s+долж(ен|на)|с\s+какой\s+стати|"
+    r"кто\s+(видит|читает)|сколько\s+стоит|какие\s+тарифы)"
 )
 
 BRIEF_PRIVACY_WORD_RE = re.compile(
     r"(?i)(?:(?<!\w)(?:nda|н\.д\.а\.|нда)(?!\w)|конфиденциальн|адвокатск\w+\s+тайн|врачебн\w+\s+тайн)"
 )
-BRIEF_PRIVACY_CHALLENGE_RE = re.compile(
-    r"(?i)(\?|почему|зачем|где\b|кто\b|кому\b|как\s+вы|гарант|не\s+могу|не\s+буду|боюсь|опасаюсь|подождите|стоп\b)"
-)
 
 OBJECTION_OR_CRITIQUE_RE = re.compile(
     r"(?i)(херн[яию]|хуйн[яию]|фигн[яию]|чушь|вода|общие\s+слова|не\s+понял|не\s+то\b|"
     r"переделай|перепиши|слабо|банальн|штамп|инфоцыган|дорого|за\s+что\s+(тут\s+)?платить|"
-    r"почему\s+так\s+дорого|за\s+что\s+\d+|ни\s+о\s+ч[её]м|так\s+я\s+и\s+сам|бред)"
+    r"почему\s+так\s+дорого|за\s+что\s+\d+|ни\s+о\s+ч[её]м|так\s+я\s+и\s+сам|бред|промокод|скидк)"
 )
 
 
@@ -229,20 +222,32 @@ def _is_meta_question(text: str | None) -> bool:
 
 
 def _is_brief_interruption(text: str | None, current_field: str | None = None) -> bool:
+    """
+    Внутри BriefStates переводит анкету на паузу ТОЛЬКО в 3 случаях:
+    1. Явный стоп-императив отказа от анкеты («стоп», «хватит анкет», «не буду заполнять»).
+    2. Прямой встречный вопрос ко второму лицу со знаком '?' (про бота, цены, NDA или хранение данных).
+    3. Отправка явно размеченного черновика поста или простыни > 700 знаков на разбор.
+    Повествовательные ответы со словами NDA, ChatGPT, Claude или @username штатно пишутся в brief_answers.
+    """
     if not text:
         return False
     t = text.strip()
-    if _is_meta_question(t) or BRIEF_ESCAPE_RE.search(t):
+    if BRIEF_REFUSAL_RE.search(t) or BRIEF_DRAFT_SUBMIT_RE.search(t):
         return True
-    # Упоминание NDA/конфиденциальности прерывает бриф только если это встречный вопрос или отказ,
-    # а не штатное перечисление табу на шаге 5 (constraints):
-    if BRIEF_PRIVACY_WORD_RE.search(t) and BRIEF_PRIVACY_CHALLENGE_RE.search(t):
-        if current_field != "constraints" or "?" in t:
-            return True
-    # Если вместо короткого ответа на пункт брифа юзер вставил целый черновик статьи/поста (>700 знаков)
+    if "?" in t and (_is_meta_question(t) or BRIEF_COUNTER_QUESTION_RE.search(t) or BRIEF_PRIVACY_WORD_RE.search(t)):
+        return True
     if len(t) > 700:
         return True
     return False
+
+
+def _compact_user_query_for_history(user_query: str, max_len: int = 4000) -> str:
+    """Сжимает середину длинного документа для history, гарантированно сохраняя финальный extra_comment клиента."""
+    if not user_query or len(user_query) <= max_len:
+        return user_query or ""
+    head = user_query[:2100].rstrip()
+    tail = user_query[-1600:].lstrip()
+    return f"{head}\n\n...[средняя часть исходного текста сокращена в истории диалога]...\n\n{tail}"
 
 # --- KEYBOARDS ---
 def main_kb(lang: str) -> ReplyKeyboardMarkup:
@@ -396,7 +401,15 @@ table_submissions: dict[str, dict] = {}
 # --- HANDLERS: START & DEEP-LINK ROUTER (hall, table, pin) ---
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message, state: FSMContext, command: CommandObject | None = None):
+    prev_data = await state.get_data()
+    preserved_flags = {
+        k: prev_data[k]
+        for k in ("meta_question_free_used", "objection_grace_used", "cold_shower_free_used", "history")
+        if k in prev_data
+    }
     await state.clear()
+    if preserved_flags:
+        await state.update_data(**preserved_flags)
     payload = ((command.args if command else "") or "").strip().lower()
     user = await db_service.get_user(message.from_user.id)
     await db_service.log_event(
@@ -464,7 +477,7 @@ async def hall_question_handler(message: types.Message, state: FSMContext):
 
     q_text = message.text.strip()
     # Если юзер вместо вопроса в пятничную рубрику задаёт мета-вопрос боту ("ты бот?") или кидает черновик на разбор
-    if _is_meta_question(q_text) or BRIEF_ESCAPE_RE.search(q_text) or len(q_text) > 1200:
+    if _is_meta_question(q_text) or BRIEF_REFUSAL_RE.search(q_text) or BRIEF_DRAFT_SUBMIT_RE.search(q_text) or len(q_text) > 1200:
         await state.set_state(BotStates.chatting)
         await chat_handler(message, state)
         return
@@ -621,65 +634,144 @@ def format_brief(brief: dict | None) -> str:
     return "[БРИФ ПРОЕКТА — опирайся на него в первую очередь]\n" + "\n".join(lines) if lines else ""
 
 
-async def generate_cold_shower_diagnosis(answers: dict) -> str:
+def brief_step_inline_kb(lang: str, show_restart: bool = False) -> InlineKeyboardMarkup:
+    row = []
+    if show_restart:
+        row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_restart", lang), callback_data="brief_restart"))
+    row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat"))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+async def generate_cold_shower_diagnosis(answers: dict, history: list | None = None) -> str:
     """
     Генерирует снайперский диагноз «Точка слива кассы» (2–3 абзаца строго на «вы»)
-    сразу после заполнения 5 вопросов брифа.
+    сразу после заполнения 5 вопросов брифа с учётом предшествующей истории диалога.
     """
     brief_dump = "\n".join(f"- {BRIEF_LABELS[f]}: {answers.get(f) or 'не указано'}" for f in BRIEF_FIELDS)
+    prior_chat = ""
+    if history:
+        recent_lines = []
+        for msg in history[-6:]:
+            role = "КЛИЕНТ" if msg.get("role") == "user" else "АРИСТАРХ"
+            txt = " ".join(p.get("text", "") for p in msg.get("parts", []) if p.get("text")).strip()
+            if txt:
+                recent_lines.append(f"{role}: {txt[:500]}")
+        if recent_lines:
+            prior_chat = "\n\nКОНТЕКСТ ПРЕДЫДУЩЕГО РАЗГОВОРА В ЧАТЕ (НЕ ПРОТИВОРЕЧЬ ТОМУ, О ЧЁМ УЖЕ ДОГОВОРИЛИСЬ):\n" + "\n".join(recent_lines)
+
     system_prompt = (
-        f"{Prompts.LORE}\n\n"
-        "Ты в своём закрытом продюсерском кабинете. Клиент только что заполнил 5 пунктов первичного брифа.\n"
-        "Твоя задача — выдать ему «Холодный душ: Точка слива кассы» (строго 2–3 плотных абзаца, 900–1600 символов, без списков и без звёздочек *):\n"
-        "1. Обращайся к клиенту строго на «вы» — как жёсткий, проницательный и дорогой ментор-продюсер, который видит его бизнес насквозь.\n"
-        "2. В первом абзаце назови главную иллюзию или слепое пятно в его вводных: где его текущая упаковка, канал или формулировка ниши расходится с деньгами, которые он хочет зарабатывать.\n"
-        "3. Во втором абзаце покажи механику: почему его целевой клиент (с учётом названного чека и ниши) сейчас проходит мимо или покупает туго, и какой именно смысловой конфликт или угол позиционирования нужно поставить в центр.\n"
-        "4. В финальной фразе брось прямой вызов: предложи прямо сейчас прислать в ответ один его реальный текст (пост, шапку канала или оффер) на оставшийся бесплатный боевой разбор, чтобы пересобрать его на монтажном столе."
+        f"{Prompts.LORE}\n"
+        "Сейчас ноябрь 2026 года. Ты в своём закрытом цифровом продюсерском кабинете. Клиент только что заполнил 5 пунктов первичного брифа.\n"
+        "Твоя задача - выдать ему «Холодный душ: Точка слива кассы» (строго 2–3 плотных абзаца, 900–1600 символов, без списков, без знака '=' вместо тире и без звёздочек *):\n"
+        "1. Обращайся к клиенту строго на «вы» - как жёсткий, проницательный и дорогой ментор-продюсер, который видит его бизнес насквозь.\n"
+        "2. В первом абзаце назови главную иллюзию или слепое пятно в его текущем маркетинге: где его нынешняя упаковка, канал или подача продукта расходится с чеком и деньгами, которые он хочет зарабатывать.\n"
+        "   ВАЖНОЕ ПРАВИЛО СОГЛАСОВАННОСТИ: НИКОГДА не критикуй клиента за нехватку времени или желание наговаривать фактуру 3-минутными голосовыми в машине! Наоборот, если у него цейтнот - подтверди, что вытаскивать дорогую драматургию из его коротких голосовых заметок между встречами и экономить ему время - это твоя прямая задача.\n"
+        "3. Во втором абзаце покажи механику: почему его целевой покупатель (с учётом названного чека и ниши) сейчас проходит мимо или уходит к конкурентам, и какой именно смысловой конфликт или угол позиционирования нужно поставить в центр.\n"
+        "4. В финальной фразе брось прямой вызов: предложи прямо сейчас прислать в ответ один его реальный текст (пост, шапку канала или оффер) на бесплатный боевой разбор, чтобы пересобрать его на монтажном столе."
     )
-    user_prompt = f"ВВОДНЫЕ БРИФА КЛИЕНТА:\n{brief_dump}\n\nВыдай диагноз «Точка слива кассы»."
+    user_prompt = f"ВВОДНЫЕ БРИФА КЛИЕНТА:\n{brief_dump}{prior_chat}\n\nВыдай диагноз «Точка слива кассы»."
     diag = await llm_service.generate_standalone(system_prompt, user_prompt, temp=0.8)
     diag = await polish_reply(llm_service, diag, user_prompt)
     return humanize_punctuation(diag.replace("*", "").strip())
 
 
-async def start_brief(message: types.Message, state: FSMContext, lang: str):
-    await db_service.log_event(message.chat.id, "BRIEF_STARTED")
-    existing = await db_service.get_brief(message.chat.id) or {}
+async def start_brief(message: types.Message, state: FSMContext, lang: str, user_id: int | None = None, force_restart: bool = False):
+    uid = user_id or message.chat.id
+    await db_service.log_event(uid, "BRIEF_STARTED")
+    data = await state.get_data()
+    existing = await db_service.get_brief(uid) or {}
     missing_indices = [idx for idx, f in enumerate(BRIEF_FIELDS) if not existing.get(f)]
-    # Если бриф был поставлен на паузу на полпути (заполнена часть полей, но не все 5) — продолжаем с первого незаполненного:
-    if existing and 0 < len(missing_indices) < len(BRIEF_FIELDS):
-        next_idx = missing_indices[0]
-        await state.set_state(BRIEF_STEPS[next_idx])
-        await state.update_data(brief_answers=dict(existing))
-        await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
-        await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[next_idx]}", lang))
+
+    # Если бриф уже заполнен на 5/5 и пользователь нажал «📋 Бриф» (без force_restart) — показываем готовое досье с кнопками
+    if not force_restart and existing and len(missing_indices) == 0:
+        await state.set_state(BotStates.chatting)
+        await message.answer(
+            i18n.get_text("brief_already_complete", lang, brief_text=format_brief(existing)),
+            parse_mode="Markdown",
+            reply_markup=brief_step_inline_kb(lang, show_restart=True),
+        )
         return
+
+    # Если бриф был поставлен на паузу на полпути (заполнено 1..4 из 5) и это не принудительный сброс —
+    # мгновенно подаём вопрос (k+1)/5 с инлайн-кнопками «🔄 Начать заново с 1/5» и «✖️ Вернуться в чат» (Вариант 3Б)
+    if not force_restart and existing and 0 < len(missing_indices) < len(BRIEF_FIELDS):
+        next_idx = missing_indices[0]
+        filled_count = len(BRIEF_FIELDS) - len(missing_indices)
+        await state.set_state(BRIEF_STEPS[next_idx])
+        await state.update_data(brief_answers=dict(existing), brief_paused_step=None)
+        await message.answer(i18n.get_text("brief_resumed_intro", lang, filled=filled_count), reply_markup=cancel_kb(lang))
+        await message.answer(
+            i18n.get_text(f"brief_q_{BRIEF_FIELDS[next_idx]}", lang),
+            reply_markup=brief_step_inline_kb(lang, show_restart=True),
+        )
+        return
+
+    # Проверка баланса ДО старта повторного брифа с 1/5 (если бесплатный диагноз уже был использован):
+    if data.get("cold_shower_free_used"):
+        user = await db_service.get_user(uid)
+        is_unlim = await db_service.has_unlimited(uid)
+        if user and not is_unlim and user.credits < 1:
+            await state.set_state(BotStates.chatting)
+            await message.answer(i18n.get_text("no_credits", lang), parse_mode="Markdown", reply_markup=paywall_kb(lang))
+            return
+
+    if force_restart:
+        await db_service.save_brief(uid, {})
     await state.set_state(BRIEF_STEPS[0])
-    await state.update_data(brief_answers={})
+    await state.update_data(brief_answers={}, brief_paused_step=None)
     await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
-    await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang))
+    await message.answer(
+        i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang),
+        reply_markup=brief_step_inline_kb(lang, show_restart=False),
+    )
 
 
 @dp.message(Command("brief"))
 async def cmd_brief(message: types.Message, state: FSMContext):
-    await start_brief(message, state, i18n.user_lang(message.from_user))
+    await start_brief(message, state, i18n.user_lang(message.from_user), user_id=message.from_user.id)
 
 
 @dp.message(F.text.in_(i18n.variants("btn_brief")))
 async def brief_button(message: types.Message, state: FSMContext):
-    await start_brief(message, state, i18n.user_lang(message.from_user))
+    await start_brief(message, state, i18n.user_lang(message.from_user), user_id=message.from_user.id)
 
 
 @dp.callback_query(F.data == "brief_start")
 async def brief_start_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await start_brief(callback.message, state, i18n.user_lang(callback.from_user))
+    await start_brief(callback.message, state, i18n.user_lang(callback.from_user), user_id=callback.from_user.id)
+
+
+@dp.callback_query(F.data == "brief_restart")
+async def brief_restart_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await start_brief(
+        callback.message,
+        state,
+        i18n.user_lang(callback.from_user),
+        user_id=callback.from_user.id,
+        force_restart=True,
+    )
+
+
+@dp.callback_query(F.data == "brief_back_chat")
+async def brief_back_chat_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    lang = i18n.user_lang(callback.from_user)
+    answers = (await state.get_data()).get("brief_answers", {})
+    if answers:
+        await db_service.save_brief(callback.from_user.id, answers)
+    await state.set_state(BotStates.chatting)
+    await callback.message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
 
 
 @dp.message(StateFilter(*BRIEF_STEPS), F.text)
 async def brief_answer(message: types.Message, state: FSMContext):
     lang = i18n.user_lang(message.from_user)
     if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
+        answers = (await state.get_data()).get("brief_answers", {})
+        if answers:
+            await db_service.save_brief(message.from_user.id, answers)
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("brief_cancelled", lang), reply_markup=main_kb(lang))
         return
@@ -687,11 +779,12 @@ async def brief_answer(message: types.Message, state: FSMContext):
     step = [s.state for s in BRIEF_STEPS].index(await state.get_state())
     current_field = BRIEF_FIELDS[step]
     answers = (await state.get_data()).get("brief_answers", {})
-    # Если юзер перебил анкету встречным вопросом (NDA/конфиденциальность/кто ты) или сразу кинул пост на разбор:
+    # Если юзер перебил анкету явным отказом, встречным вопросом со знаком '?' или готовым постом (>700 знаков):
     if _is_brief_interruption(message.text, current_field=current_field):
         if answers:
             await db_service.save_brief(message.from_user.id, answers)
             await db_service.log_event(message.from_user.id, "BRIEF_PARTIAL_SAVED", f"fields:{list(answers.keys())}")
+        await state.update_data(brief_paused_step=step)
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("brief_paused_for_chat", lang), reply_markup=main_kb(lang), parse_mode="Markdown")
         await chat_handler(message, state)
@@ -700,39 +793,45 @@ async def brief_answer(message: types.Message, state: FSMContext):
     answers[current_field] = "" if message.text.strip().lower() in BRIEF_SKIP_WORDS else message.text
     if step + 1 < len(BRIEF_STEPS):
         await state.update_data(brief_answers=answers)
+        await db_service.save_brief(message.from_user.id, answers)
         await state.set_state(BRIEF_STEPS[step + 1])
-        await message.answer(i18n.get_text(f"brief_q_{BRIEF_FIELDS[step + 1]}", lang))
+        await message.answer(
+            i18n.get_text(f"brief_q_{BRIEF_FIELDS[step + 1]}", lang),
+            reply_markup=brief_step_inline_kb(lang, show_restart=True),
+        )
         return
 
     await db_service.save_brief(message.from_user.id, answers)
     await db_service.log_event(message.from_user.id, "BRIEF_SAVED")
-    await state.update_data(brief_answers={})
+    await state.update_data(brief_answers={}, brief_paused_step=None)
     await state.set_state(BotStates.chatting)
     await message.answer(i18n.get_text("brief_saved", lang), reply_markup=main_kb(lang))
 
-    # Автоматический «Холодный душ: Точка слива кассы» сразу после 5-го ответа брифа
+    # Автоматический «Холодный душ: Точка слива кассы» сразу после 5-го ответа брифа (0 кредитов за первый диагноз!)
     wait_msg = await message.answer(i18n.get_text("brief_cold_shower_wait", lang), parse_mode="Markdown")
     try:
-        diagnosis = await generate_cold_shower_diagnosis(answers)
-        user = await db_service.get_user(message.from_user.id)
-        is_unlim = await db_service.has_unlimited(message.from_user.id)
-        if user and not is_unlim and user.credits > 0:
-            await db_service.update_balance(message.from_user.id, -1)
-        await db_service.log_event(message.from_user.id, "BRIEF_COLD_SHOWER", diagnosis[:1000])
         data = await state.get_data()
         history = data.get("history", [])
+        diagnosis = await generate_cold_shower_diagnosis(answers, history=history)
+        user = await db_service.get_user(message.from_user.id)
+        is_unlim = await db_service.has_unlimited(message.from_user.id)
+        cold_shower_already_used = bool(data.get("cold_shower_free_used"))
+        remaining_credits = user.credits if user else 2
+        if cold_shower_already_used and user and not is_unlim and user.credits > 0:
+            remaining_credits = await db_service.update_balance(message.from_user.id, -1)
+        await db_service.log_event(message.from_user.id, "BRIEF_COLD_SHOWER", diagnosis[:1000])
         new_history = history + [
             {"role": "user", "parts": [{"text": f"[БРИФ ЗАПОЛНЕН]\n{format_brief(answers)}"}]},
             {"role": "model", "parts": [{"text": diagnosis}]},
         ]
-        await state.update_data(history=new_history[-40:])
+        await state.update_data(history=new_history[-40:], cold_shower_free_used=True)
         try:
             await wait_msg.delete()
         except Exception:
             pass
         await send_smart_response(message, f"🔎 ТОЧКА СЛИВА КАССЫ (ПЕРВИЧНЫЙ ДИАГНОЗ):\n\n{diagnosis}")
         await message.answer(
-            i18n.get_text("brief_cold_shower_footer", lang),
+            i18n.get_text("brief_cold_shower_footer", lang, credits=remaining_credits),
             parse_mode="Markdown",
             reply_markup=paywall_kb(lang),
         )
@@ -1456,8 +1555,8 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     if brief_text:
         semantic_ctx = brief_text + ("\n\n" + semantic_ctx if semantic_ctx else "")
 
-    # === ЕДИНАЯ ЖИЗНЬ КАНАЛА И ЧАТ-БОТА (ПОВЕСТКА ПОСЛЕДНЕГО ПОСТА + ДЕНЬ КОЛУМНИСТА) ===
-    agenda, base_spatial_context = _load_live_channel_and_day_context()
+    # === ЕДИНАЯ ЖИЗНЬ КАНАЛА И ЧАТ-БОТА (ПОВЕСТКА ПОСЛЕДНЕГО ПОСТА В КАНАЛЕ, БЕЗ БЫТОВОГО SPATIAL_CONTEXT) ===
+    agenda, _ = _load_live_channel_and_day_context()
     if agenda:
         logger.debug(f"📋 [Повестка канала] Загружен последний пост: {agenda.get('focus_topic', 'N/A')[:60]}")
 
@@ -1467,7 +1566,6 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     
     if not last_msg_time or interaction_count == 1:
         time_passed_str = "Это начало нового разговора."
-        delta_seconds = 0
     else:
         delta_seconds = current_time - last_msg_time
         if delta_seconds < 60:
@@ -1478,44 +1576,44 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             time_passed_str = f"Прошло {int(delta_seconds // 3600)} час(ов). Юзер вернулся после перерыва."
         else:
             days = int(delta_seconds // 86400)
-            if days == 1:
-                time_passed_str = "Прошёл 1 день. Юзер пропадал сутки."
-            elif days < 7:
-                time_passed_str = f"Прошло {days} дня/дней! Юзер где-то пропадал."
-            elif days < 30:
-                time_passed_str = f"Прошло {days} дней (несколько недель)! Юзер надолго исчез."
-            else:
-                time_passed_str = f"Прошло {days} дней (МЕСЯЦЫ)! Юзер пропал на огромный срок."
+            time_passed_str = f"Прошло {days} дн. с прошлого сообщения."
 
-    # ╔══════════════════════════════════════════════════════════════╗
-    # ║  [NEW] УМНАЯ АДАПТАЦИЯ ЛОКАЦИИ (Синхронно с columnist_state.json)
-    # ╚══════════════════════════════════════════════════════════════╝
-    last_spatial_context = data.get("last_spatial_context", None)
-    
-    should_mention_location = False
-    
-    if interaction_count == 1:
-        # Первое сообщение в диалоге — упоминаем локацию
-        should_mention_location = True
-    elif delta_seconds > 1800:
-        # Прошло больше 30 минут — упоминаем локацию
-        should_mention_location = True
-    elif last_spatial_context and base_spatial_context and last_spatial_context != base_spatial_context:
-        # Локация сменилась с прошлого сообщения — упоминаем
-        should_mention_location = True
-    
-    if should_mention_location:
-        spatial_context = (
-            f"{base_spatial_context}\n"
-            "(Ты можешь коротко упомянуть, чем занят, в начале ответа.)"
-        )
-        logger.debug(f"🏙️ [Среда] Упоминание РАЗРЕШЕНО: {base_spatial_context[:80]}...")
+    # В коммерческом боте (Инстанс №1) бытовой ролеплей (spatial_context) отключён полностью (Решение 1В)
+    spatial_context = ""
+
+    # Вычисляем точный остаток кредитов ПОСЛЕ текущего хода (credits_after) для управления финалом ответа (Решение 2В)
+    if is_unlim:
+        expected_credits_after = 999
+    elif is_free_meta:
+        expected_credits_after = user.credits
+    elif is_objection_grace:
+        expected_credits_after = 0
     else:
-        spatial_context = (
-            f"{base_spatial_context}\n"
-            "(Это твой ВНУТРЕННИЙ контекст. НЕ упоминай его в ответе. Отвечай по сути.)"
+        expected_credits_after = max(0, user.credits - 1)
+
+    # Статус незавершённого/поставленного на паузу брифа для system_instruction (без ломки чередования user->model в history)
+    brief_status = ""
+    if brief:
+        missing_fields = [f for f in BRIEF_FIELDS if not brief.get(f)]
+        if 0 < len(missing_fields) < len(BRIEF_FIELDS):
+            next_f = missing_fields[0]
+            next_num = BRIEF_FIELDS.index(next_f) + 1
+            filled_num = len(BRIEF_FIELDS) - len(missing_fields)
+            q_topic = BRIEF_LABELS.get(next_f, next_f)
+            brief_status = (
+                f"[СИСТЕМА: Анкета брифа поставлена на паузу на вопросе {next_num}/5 («{q_topic}»). "
+                f"Сохранено {filled_num}/5 ответов в досье. Клиент перешёл к прямому вопросу или материалу. "
+                f"Если он спросит про анкету - поясни, что ответы сохранены и дозаполнить бриф с вопроса {next_num}/5 можно кнопкой «📋 Бриф».]"
+            )
+    elif data.get("brief_paused_step") is not None:
+        paused_idx = int(data["brief_paused_step"])
+        next_f = BRIEF_FIELDS[paused_idx]
+        q_topic = BRIEF_LABELS.get(next_f, next_f)
+        brief_status = (
+            f"[СИСТЕМА: Анкета брифа поставлена на паузу на вопросе {paused_idx + 1}/5 («{q_topic}»). "
+            f"Сохранено 0/5 ответов в досье. Клиент перешёл к прямому вопросу или материалу. "
+            f"Если он спросит про анкету - поясни, что вернуться к брифу с вопроса {paused_idx + 1}/5 можно кнопкой «📋 Бриф».]"
         )
-        logger.debug(f"🏙️ [Среда] Упоминание ЗАПРЕЩЕНО: {base_spatial_context[:80]}...")
 
     # ╔══════════════════════════════════════════════════════════════╗
     # ║  ШАГ 1: ВНУТРЕННИЙ МОНОЛОГ (THINKING)
@@ -1526,7 +1624,9 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         fatigue=new_states["fatigue"], 
         mood=new_states["mood"],
         time_passed=time_passed_str,
-        spatial_context=spatial_context
+        spatial_context=spatial_context,
+        credits_after=expected_credits_after,
+        brief_status=brief_status,
     )
     
     inner_monologue = await llm_service.generate_monologue(
@@ -1555,23 +1655,26 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         core_beliefs=core_beliefs,
         agenda=agenda,
         spatial_context=spatial_context,
-        search_results=search_results
+        search_results=search_results,
+        credits_after=expected_credits_after,
+        brief_status=brief_status,
     )
     if is_free_meta:
         sys_prompt += (
             "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: МЕТА-ВОПРОС ИЛИ СОМНЕНИЕ КЛИЕНТА]\n"
             "Собеседник проверяет, кто ты такой, чем отличаешься от обычного ChatGPT/Claude, либо беспокоится о конфиденциальности/NDA.\n"
-            "1. Ответь строго на «вы», хлёстко и по-продюсерски (2 коротких абзаца, без воды): объясни, что базовый GPT пишет стерильную вежливую вату и гладит эго, а ты — ИИ-продюсер с оптикой 55-летнего телевизионного шоураннера, который ищет слив кассы и переписывает мёртвые тексты в деньги («Было -> Стало»).\n"
-            "2. Если вопрос про конфиденциальность/NDA или публичный разбор — твёрдо зафиксируй: всё, что пишется в этом кабинете и в брифе, строго конфиденциально, хранится только в вашем закрытом досье и никогда не попадает в публичный канал (в среду на «Монтажный стол» попадают только те тексты, которые авторы сами отправляют специальной кнопкой на анонимную порку с вырезанием всех имён).\n"
+            "1. Ответь строго на «вы», хлёстко и по-продюсерски (2 коротких абзаца, без воды): объясни, что базовый GPT пишет стерильную вежливую вату и гладит эго, а в этот закрытый цифровой кабинет оцифрованы продюсерская оптика и правила «Монтажного стола» 55-летнего телевизионного шоураннера Аристарха Градова, который ищет слив кассы и переписывает мёртвые тексты в деньги («Было -> Стало»).\n"
+            "2. Если вопрос про конфиденциальность/NDA или публичный разбор - твёрдо зафиксируй: всё, что пишется в этом кабинете и в брифе, строго конфиденциально, хранится только в вашем закрытом продюсерском досье и никогда не попадает в публичный канал (в среду на «Монтажный стол» попадают только те тексты, которые авторы сами отправляют специальной кнопкой на анонимную порку с вырезанием всех имён).\n"
             "3. Заверши прямым вызовом: предложи прямо сейчас без всяких анкет скинуть в чат любой один пост, оффер или шапку канала на пробу (либо нажать /brief)."
         )
     elif is_objection_grace:
         sys_prompt += (
-            "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: ЖЁСТКОЕ ВОЗРАЖЕНИЕ ИЛИ КРИТИКА ОТ КЛИЕНТА]\n"
-            "Собеседник недоволен предыдущим ответом (считает его общим/водой/слишком дорогим или требует переделать конкретный кусок).\n"
+            "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: ЖЁСТКОЕ ВОЗРАЖЕНИЕ ИЛИ ПРЕДПРОДАЖНЫЙ ВОПРОС ПРИ 0 КРЕДИТОВ]\n"
+            "Собеседник на нулевом балансе: либо недоволен предыдущим ответом, либо спорит о цене/просит промокод/задаёт финальный вопрос перед покупкой.\n"
             "1. Никаких обид, оправданий или канцелярщины. Прими удар спокойно и с достоинством взрослого шоураннера (строго на «вы»).\n"
-            "2. Если претензия к тексту — без прелюдий выдай максимально плотный, злой и конкретный переписанный вариант («Стало») с цифрами и нервом, убрав любую воду.\n"
-            "3. Если претензия к цене тарифа (1 490 / 4 900 / 9 900 ₽ или B2B-двойник) — покажи математику окупаемости: один пересобранный пост или оффер отбивает стоимость месячного абонемента с первой же заявки, а живой шеф-редактор такого уровня стоит от 150 000 ₽ в месяц."
+            "2. Если претензия к тексту - без прелюдий выдай максимально плотный, точный и статус-калиброванный переписанный вариант («Стало») с цифрами и нервом, убрав любую воду.\n"
+            "3. Если претензия к цене тарифа (1 490 / 4 900 / 9 900 ₽ или B2B-двойник) или просьба дать скидку/промокод - НИКОГДА не выдумывай промокоды и не обещай бесплатных разборов; покажи математику окупаемости: один пересобранный пост или оффер отбивает стоимость месячного абонемента с первой же сделки, а живой шеф-редактор такого уровня стоит от 150 000 ₽ в месяц.\n"
+            "4. Поскольку после этого сообщения сразу покажется пейволл (credits_after = 0), НЕ задавай вопросов в конце ответа - поставь уверенную точку."
         )
     
     failed = False  # при сбое генерации запрос не списываем
@@ -1588,7 +1691,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             await db_service.log_event(message.from_user.id, "AI_IGNORED_USER")
             
             new_history = history + [
-                {"role": "user", "parts": [{"text": user_query[:4000]}]},
+                {"role": "user", "parts": [{"text": _compact_user_query_for_history(user_query)}]},
                 {"role": "model", "parts": [{"text": "[АРИСТАРХ МОЛЧА ПРОИГНОРИРОВАЛ СООБЩЕНИЕ]"}]}
             ]
             
@@ -1596,12 +1699,11 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
                 history=new_history[-40:], 
                 interaction_count=interaction_count,
                 last_message_time=current_time,
-                last_spatial_context=base_spatial_context  # [NEW] Сохраняем локацию
             )
             
             try:
                 await wait_msg.delete()
-            except:
+            except Exception:
                 pass
                 
             await state.set_state(BotStates.chatting)
@@ -1609,7 +1711,17 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         
         if not failed:
             response_text = await polish_reply(llm_service, response_text, user_query)
-        response_text = humanize_punctuation(response_text.replace('*', ''))
+            response_text = humanize_punctuation(response_text.replace('*', ''))
+            # Детерминированная защита финала при credits_after == 0: не провоцируем клиента на вопрос перед пейволлом
+            if expected_credits_after <= 0 and response_text.rstrip().endswith("?"):
+                paragraphs = [p.strip() for p in response_text.strip().split("\n\n") if p.strip()]
+                if len(paragraphs) > 1 and paragraphs[-1].endswith("?") and len(paragraphs[-1]) < 220:
+                    paragraphs.pop()
+                    response_text = "\n\n".join(paragraphs)
+                else:
+                    sents = re.split(r"(?<=[.!?])\s+", response_text.strip())
+                    if len(sents) > 1 and sents[-1].endswith("?"):
+                        response_text = " ".join(sents[:-1]).strip()
 
         logger.info(f"📤 [ARISTARKH {message.from_user.id}]: {response_text[:500]}...")
         
@@ -1623,20 +1735,23 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
 
     try:
         await wait_msg.delete()
-    except:
+    except Exception:
         pass
 
+    # При ошибке генерации (failed == True) НЕ загрязняем history, НЕ списываем кредит и НЕ шлём подсказки
+    if failed:
+        await send_smart_response(message, response_text)
+        return
+
     new_history = history + [
-        {"role": "user", "parts": [{"text": user_query[:4000]}]},
+        {"role": "user", "parts": [{"text": _compact_user_query_for_history(user_query)}]},
         {"role": "model", "parts": [{"text": response_text}]}
     ]
     
-    # [NEW] Сохраняем last_spatial_context для следующего сообщения
     await state.update_data(
         history=new_history[-40:], 
         interaction_count=interaction_count,
         last_message_time=current_time,
-        last_spatial_context=base_spatial_context
     )
     
     if interaction_count % 5 == 0:
@@ -1648,39 +1763,54 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         )
     
     new_bal = user.credits
-    if not is_unlim and not failed and not is_free_meta and not is_objection_grace:
+    if not is_unlim and not is_free_meta and not is_objection_grace:
         new_bal = await db_service.update_balance(message.from_user.id, -1)
 
     await send_smart_response(message, response_text)
 
-    if is_objection_grace and not failed:
+    if is_objection_grace:
+        is_pure_question = "?" in user_query and not bool(
+            re.search(r"(?i)(переделай|перепиши|исправь|докрути|вариант|заголовок)", user_query)
+        )
+        footer_key = "grace_question_footer" if is_pure_question else "grace_credits_footer"
         await message.answer(
-            i18n.get_text("grace_credits_footer", lang),
+            i18n.get_text(footer_key, lang),
             parse_mode="Markdown",
             reply_markup=paywall_kb(lang),
         )
-    elif not is_unlim and not failed and not is_free_meta and new_bal <= 0:
+    elif not is_unlim and not is_free_meta and new_bal <= 0:
         await message.answer(
             i18n.get_text("no_credits", lang),
             parse_mode="Markdown",
             reply_markup=paywall_kb(lang),
         )
 
-    # Один раз за сессию напоминаем про бриф тем, кто его ещё не заполнил
-    if not brief and not failed and not data.get("brief_hint_shown"):
-        await message.answer(i18n.get_text("brief_hint", lang))
+    # Умное подавление плашки brief_hint: не шлём, если клиент отказался от анкет, задал мета-вопрос,
+    # баланс обнулился, либо Аристарх уже запросил черновик текста или упомянул /brief
+    should_suppress_brief_hint = (
+        is_free_meta
+        or is_objection_grace
+        or (not is_unlim and new_bal <= 0)
+        or bool(BRIEF_REFUSAL_RE.search(user_query))
+        or bool(re.search(r"(?i)(/brief|бриф|шапк\w+|закреп|черновик|пришлите|скидывайте|присылайте)", response_text))
+    )
+    if not brief and not data.get("brief_hint_shown"):
+        if not should_suppress_brief_hint:
+            await message.answer(i18n.get_text("brief_hint", lang))
         await state.update_data(brief_hint_shown=True)
 
-    try:
-        suggestion = await assistant_service.generate_suggestion(new_history[-40:])
-        if suggestion:
-            clean_suggestion = html.escape(humanize_punctuation(suggestion.strip()))
-            suggestion_msg = i18n.get_text("assistant_hint", lang, text=clean_suggestion)
-            await message.answer(suggestion_msg, parse_mode="HTML")
-            await db_service.log_event(message.from_user.id, "ASSISTANT_SUGGESTION_SENT", suggestion)
-    except Exception as e:
-        logger.error(f"Assistant generation failed: {e}")
-        await db_service.log_event(message.from_user.id, "ASSISTANT_ERROR", str(e))
+    # Модуль Подсказка ассистента отключён по умолчанию (ENABLE_ASSISTANT_HINTS=false, Усиленный Вариант 2В)
+    if config.ENABLE_ASSISTANT_HINTS and (is_unlim or new_bal > 2):
+        try:
+            suggestion = await assistant_service.generate_suggestion(new_history[-40:])
+            if suggestion:
+                clean_suggestion = html.escape(humanize_punctuation(suggestion.strip()))
+                suggestion_msg = i18n.get_text("assistant_hint", lang, text=clean_suggestion)
+                await message.answer(suggestion_msg, parse_mode="HTML")
+                await db_service.log_event(message.from_user.id, "ASSISTANT_SUGGESTION_SENT", suggestion)
+        except Exception as e:
+            logger.error(f"Assistant generation failed: {e}")
+            await db_service.log_event(message.from_user.id, "ASSISTANT_ERROR", str(e))
 
 
 async def extract_and_save_memory(user_id: int, history_chunk: list):

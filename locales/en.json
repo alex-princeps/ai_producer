@@ -72,7 +72,7 @@
   "brief_q_constraints": "5/5. Constraints and preferences: budget, how much time you can spend, topics that are off limits, the tone you like.",
   "brief_saved": "✅ Brief saved.",
   "brief_cold_shower_wait": "⏳ *Aristarkh closed the folder with your brief and is formulating your «Cash Leak Diagnosis»...*",
-  "brief_cold_shower_footer": "🎯 **You have 1 free combat review left.**\nSend one real text (a post, channel bio, or offer) right now — I'll show you how to rebuild it so it sells.\n\nOr choose a plan below for ongoing work:",
+  "brief_cold_shower_footer": "🎯 **Initial brief diagnosis completed for free (0 credits). You have {credits} free combat reviews left.**\nSend one real text (a post, channel bio, or offer) right now - I'll show you how to rebuild it so it sells.\n\nOr choose a plan below for ongoing work:",
   "brief_cancelled": "Brief cancelled. Come back to it with /brief.",
   "brief_hint": "💡 For sharper advice, fill in the brief: /brief (5 questions, 2 minutes, doesn't use your requests).",
   "pkg_rub_trial": "⚡️ 1,490 ₽ — Trial Edit (15 reviews / 7 days)",
@@ -93,5 +93,10 @@
   "b2b_accepted": "✅ **Dossier forwarded directly to the Chief Producer.** We will review your inputs and reach out shortly.",
   "start_cold_message": "Hello. You are in the private office of Aristarkh Gradov — TV showrunner and media producer.\n\nYou have **2 free combat reviews**. You can either drop any post/bio/offer directly into this chat right now for a «Before → After» rewrite, or take the 5-question Brief below (0 credits) for a full project diagnosis:",
   "grace_credits_footer": "🎯 **I rebuilt the disputed section on the house (bonus grace review).**\n\nYour free demo limit is now complete. Choose a working plan below to continue:",
-  "brief_paused_for_chat": "⏸ *Brief paused (your previous answers are saved). Answering your question directly:*"
+  "grace_question_footer": "🎯 **Answered your question outside the demo limit.**\n\nYour free demo limit is now complete. Choose a working plan below to continue:",
+  "brief_paused_for_chat": "⏸ *Brief paused (your previous answers are saved). Answering your question directly:*",
+  "brief_resumed_intro": "📋 Resuming brief where we left off ({filled}/5 answers saved):",
+  "brief_already_complete": "📋 **Your project brief is already complete (5/5):**\n\n{brief_text}\n\nSend texts in chat or restart the brief from scratch:",
+  "btn_brief_restart": "🔄 Restart from 1/5",
+  "btn_brief_back_chat": "✖️ Back to chat"
 }

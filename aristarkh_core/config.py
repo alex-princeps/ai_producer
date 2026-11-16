@@ -46,8 +46,9 @@ class Config:
         # Defaults
         self.SESSION_NAME = 'aristarkh_agent'
         
-        # Настройки буфера сообщений
+        # Настройки буфера сообщений и подсказок ассистента
         self.LONG_TEXT_THRESHOLD = 3500
+        self.ENABLE_ASSISTANT_HINTS = os.getenv("ENABLE_ASSISTANT_HINTS", "false").lower() in ("true", "1", "yes")
 
         # [КРИТИЧЕСКИЙ ФИКС] Медиа-файлы — теперь с абсолютным путём
         self.PDF_PATH = os.path.join(BASE_DIR, "media", "ИИ-Продюсер_Аристарх Градов.pdf")

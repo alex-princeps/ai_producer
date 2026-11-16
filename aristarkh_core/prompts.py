@@ -132,7 +132,7 @@ class Prompts:
 
     # === [CRITICAL FIX] ПРОМПТ МОНОЛОГА - ПЕРЕХОД НА XML-ТЕГИ ===
     @staticmethod
-    def get_monologue_prompt(temp: float, trust: int = 50, fatigue: int = 0, mood: str = "neutral", time_passed: str = "", spatial_context: str = "") -> str:
+    def get_monologue_prompt(temp: float, trust: int = 50, fatigue: int = 0, mood: str = "neutral", time_passed: str = "", spatial_context: str = "", credits_after: int | None = None, brief_status: str = "") -> str:
         """
         Промпт заставляет LLM ДУМАТЬ, а не ГОВОРИТЬ.
         [CRITICAL FIX] Использует XML-теги вместо JSON - абсолютная устойчивость парсера.
@@ -146,9 +146,24 @@ class Prompts:
 {time_passed}
 Учти это в стратегии. Если собеседник долго отсутствовал, можно коротко и дружелюбно это отметить. Если это первый запрос, ты свеж и собран.
 """
+        spatial_block = ""
+        if spatial_context:
+            spatial_block = f"""
+[ГДЕ ТЫ СЕЙЧАС И ЧТО ДЕЛАЕШЬ (SPATIAL CONTEXT)]:
+{spatial_context}
+(Это фон. На качество ответа и на отношение к собеседнику он не влияет.)
+"""
+        brief_status_block = f"\n{brief_status}\n" if brief_status else ""
+        credits_block = ""
+        if credits_after is not None:
+            if credits_after > 0:
+                credits_block = f"\n[ОСТАТОК ДЕМО-БАЛАНСА ПОСЛЕ ЭТОГО ХОДА: {credits_after} разб. В конце ответа обязательно запланируй короткий мостик на следующий осязаемый артефакт (шапка, закреп, разбор возражения или черновик поста).]\n"
+            else:
+                credits_block = "\n[ОСТАТОК ДЕМО-БАЛАНСА ПОСЛЕ ЭТОГО ХОДА: 0 разб. (сразу под ответом покажется пейволл с тарифами). В конце ответа запрещены любые вопросы и призывы прислать следующий текст — ставь уверенную финальную точку.]\n"
 
         return f"""
 {Prompts.BOT_LORE}
+СЕЙЧАС: ноябрь 2026 года.
 
 [СЕКРЕТНАЯ ДИРЕКТИВА: КОГНИТИВНЫЙ ПРОЦЕСС]
 Ты сейчас НЕ общаешься с пользователем. Это твой внутренний монолог.
@@ -158,11 +173,7 @@ class Prompts:
 - Доверие к пользователю: {trust}/100 (влияет на открытость и теплоту)
 - Усталость: {fatigue}/100 (влияет только на длину ответа)
 - Настроение: {mood}
-{time_injection}
-[ГДЕ ТЫ СЕЙЧАС И ЧТО ДЕЛАЕШЬ (SPATIAL CONTEXT)]:
-{spatial_context}
-(Это фон. На качество ответа и на отношение к собеседнику он не влияет.)
-
+{time_injection}{spatial_block}{brief_status_block}{credits_block}
 ОТВЕТЬ СТРОГО ИСПОЛЬЗУЯ XML-ТЕГИ (без markdown, без ```xml):
 
 <THOUGHTS>
@@ -176,7 +187,7 @@ class Prompts:
 
     # === [UPDATED] СИСТЕМНЫЙ ПРОМПТ С ГИБКОЙ ПОВЕСТКОЙ, СРЕДОЙ И ФАКТАМИ ===
     @staticmethod
-    def get_system_prompt(temp: float, trust: int = 50, fatigue: int = 0, mood: str = "neutral", monologue: str = "", core_beliefs: list = None, agenda: dict = None, spatial_context: str = "", search_results: str = "") -> str:
+    def get_system_prompt(temp: float, trust: int = 50, fatigue: int = 0, mood: str = "neutral", monologue: str = "", core_beliefs: list = None, agenda: dict = None, spatial_context: str = "", search_results: str = "", credits_after: int | None = None, brief_status: str = "") -> str:
         # [STATE TRACKER] Инъекция матрицы состояний из аффективной памяти
         state_injection = f"""
 [ТВОЕ ТЕКУЩЕЕ ВНУТРЕННЕЕ СОСТОЯНИЕ (AFFECTIVE MEMORY)]
@@ -224,12 +235,33 @@ class Prompts:
 НЕ вставляй пересказ своего поста в каждый ответ без повода. Но если собеседник спрашивает, о чём ты недавно писал в канале, как прошёл день или касается смежной темы — опирайся на этот пост и свой сегодняшний день на 100% согласованно.
 """
 
-        # [CRITICAL FIX B] Инъекция Ситуативного Контекста (Среда Обитания) - БЕЗ жёсткого требования упоминать
+        # [CRITICAL FIX B] Инъекция Ситуативного Контекста (Среда Обитания) - в коммерческом боте отключено по умолчанию
         context_injection = ""
         if spatial_context:
             context_injection = f"""
 [СИТУАТИВНЫЙ КОНТЕКСТ: ГДЕ ТЫ СЕЙЧАС (МОСКОВСКОЕ ВРЕМЯ)]
 Твое текущее занятие и локация: "{spatial_context}"
+"""
+
+        brief_status_injection = f"\n{brief_status}\n" if brief_status else ""
+
+        credits_ending_injection = ""
+        if credits_after is not None:
+            if credits_after > 0:
+                credits_ending_injection = f"""
+[ПРАВИЛО ФИНАЛА ОТВЕТА (У КЛИЕНТА ОСТАЁТСЯ ЕЩЁ {credits_after} БЕСПЛАТНЫХ РАЗБОРА НА БАЛАНСЕ)]
+В самом конце своего ответа обязательно перекинь короткий (1–2 предложения) предметный продюсерский мостик на следующий осязаемый артефакт:
+- если сейчас ты переписал пост или статью — предложи следом скинуть шапку (bio) или закреп канала, куда пойдёт трафик с этого поста;
+- если пересобрал оффер или шапку — предложи разобрать главное ценовое возражение клиентов на созвоне или следующий боевой пост;
+- если ответил на вводный вопрос — предложи прямо сейчас прислать реальный черновик текста на монтажный стол.
+Никогда не ставь тупиковую точку и не прощайся, пока у клиента есть неизрасходованные разборы.
+"""
+            else:
+                credits_ending_injection = """
+[ПРАВИЛО ФИНАЛА ОТВЕТА (CREDITS_AFTER = 0 — СРАЗУ ПОД ТВОИМ ОТВЕТОМ ПОКАЖЕТСЯ ПЕЙВОЛЛ С ТАРИФАМИ)]
+Это последний бесплатный разбор клиента в демо-режиме; ровно под твоим сообщением система выведет кнопки выбора платного тарифа.
+КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО в конце ответа задавать вопросы собеседнику («Берём в работу?», «Что думаете?», «Какой вариант выбираете?») или предлагать прислать следующий текст на разбор.
+Заверши ответ уверенной, весомой продюсерской точкой по текущей задаче, чтобы плашка выбора тарифа ниже считывалась как единственный логичный следующий шаг.
 """
 
         # [NEW] Инъекция фактов из интернета (добыты Micro-Router'ом)
@@ -274,6 +306,8 @@ class Prompts:
 {search_injection}
 {state_injection}
 {context_injection}
+{brief_status_injection}
+{credits_ending_injection}
 {monologue_injection}
 {telegram_rules}
 """

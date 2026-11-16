@@ -63,7 +63,32 @@ def _strip(text: str, problems: list[tuple[str, re.Pattern, str]]) -> str:
     return re.sub(r"(^|[.!?…]\s+)([a-zа-яё])", lambda m: m.group(1) + m.group(2).upper(), text)
 
 
+def _sanitize_deterministic(text: str, user_text: str = "") -> str:
+    """Детерминированная очистка самореферентного IT-жаргона и анахронизмов дат (0 токенов)."""
+    if not text:
+        return text
+    # 1. Замена самореферентного IT-жаргона на язык закрытого продюсерского кабинета
+    replacements = [
+        (r"(?i)\bв\s+рамках\s+(?:нашего\s+|одного\s+|единого\s+)?треда\b", "в рамках вашего закрытого досье"),
+        (r"(?i)\bедин\w+\s+тред\w*\b", "закрытого досье проекта"),
+        (r"(?i)\bконтекстн\w+\s+окн\w*\b", "памяти закрытого досье"),
+        (r"(?i)\bсистемн\w+\s+промпт\w*\b", "внутреннего регламента кабинета"),
+        (r"(?i)\bпамят\w+\s+системы\b", "память закрытого досье"),
+        (r"(?i)\bцифров\w+\s+разум\w*\b", "ИИ-продюсер"),
+    ]
+    for pat, repl in replacements:
+        text = re.sub(pat, repl, text)
+
+    # 2. Если пользователь сам не упоминал 2023/2024/2025 год, не даём модели называть их текущим годом
+    for old_year in ("2023", "2024", "2025"):
+        if old_year not in (user_text or ""):
+            text = re.sub(rf"\b{old_year}\s+(год(?:а|у|ом|е)?)\b", rf"2026 \1", text)
+            text = re.sub(rf"(?i)\bв\s+{old_year}\b", "в 2026", text)
+    return text
+
+
 async def polish_reply(llm, text: str, user_text: str = "") -> str:
+    text = _sanitize_deterministic(text, user_text)
     problems = find_problems(text, user_text)
     if not problems:
         return text
