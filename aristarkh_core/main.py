@@ -33,6 +33,7 @@ import logging
 logger = logging.getLogger(__name__)
 import i18n
 from aristarkh_core.prompts import Prompts
+from aristarkh_core.prompt_builder import LegoPromptBuilder, infer_register_from_text
 from aristarkh_core.database import BRIEF_FIELDS, DatabaseService
 from aristarkh_core.reply_guard import polish_reply
 from aristarkh_core.rag_chroma import RAGService
@@ -86,13 +87,21 @@ AGENDA_PATH = os.path.join(BASE_DIR, "aristarkh_agenda.json")
 TG_NEWS_PATH = os.path.join(os.path.dirname(BASE_DIR), "tg_news.json")
 
 
-def _load_live_channel_and_day_context() -> tuple[dict, str]:
+CHANNEL_QUERY_RE = re.compile(
+    r"(?i)(в\s+(?:тво[её]м|вашем)\s+канале|последн\w+\s+пост\w*\s+в\s+канале|"
+    r"о\s+ч[её]м\s+(?:ты\s+|вы\s+)?писал\w*\s+в\s+канале|рубрик\w+\s+в\s+канале)"
+)
+
+
+def _load_live_channel_and_day_context(user_query: str = "") -> tuple[dict, str]:
     """
-    Синхронизация коммерческого бота (Инстанс №1) с последним постом ТГ-канала (Инстанс №2) за 0 токенов.
-    Бытовой ролеплей и среда обитания (spatial_context / context_simulator) в коммерческом боте отключены (Решение 1В),
-    чтобы исключить жалобы на снотворное/мигрень и рассинхрон часовых поясов.
+    В коммерческом боте (Инстанс №1) повестка публичного ТГ-канала (tg_news.json) изолирована по умолчанию (Вариант 1А)
+    и подгружается за 0 токенов ТОЛЬКО если пользователь сам явно спросил про публичный канал.
     """
     base_spatial = ""
+    if not user_query or not CHANNEL_QUERY_RE.search(user_query):
+        return {}, base_spatial
+
     day = {}
     try:
         now_msk = columnist.datetime.now(columnist.MSK)
@@ -156,6 +165,7 @@ class BotStates(StatesGroup):
     waiting_for_promo = State()
     waiting_for_hall_question = State()
     waiting_for_table_text = State()
+    waiting_for_editorial_rule = State()
     b2b_scale = State()
     b2b_contact = State()
 
@@ -177,7 +187,7 @@ long_input_tasks = {}
 user_message_buffers = {}
 user_image_buffers = {}
 
-# --- КЛАССИФИКАТОРЫ NON-LINEAR ПОВЕДЕНИЯ ПОЛЬЗОВАТЕЛЕЙ (0 ТОКЕНОВ) ---
+# --- КЛАССИФИКАТОРЫ NON-LINEAR ПОВЕДЕДЕНИЯ ПОЛЬЗОВАТЕЛЕЙ (0 ТОКЕНОВ) ---
 META_QUESTION_RE = re.compile(
     r"(?i)((?:ты|вы)\s+бот|кто\s+(?:ты|вы)|что\s+(?:ты|вы)\s+(можешь|можете|умеешь|умеете|делаешь|делаете)|"
     r"чем\s+(?:ты\s+|вы\s+)?(отличаешься|отличаетесь|лучше)|"
@@ -186,7 +196,7 @@ META_QUESTION_RE = re.compile(
     r"человек\s+или\s+(?:обычный\s+)?бот|об[её]ртка\s+над|"
     r"зачем\s+(?:мне\s+)?(?:тебе\s+|вам\s+)?платить|зачем\s+платить\s+(?:тебе|вам)|"
     r"зачем\s+(?:мне\s+)?(бриф|анкета|эти\s+вопросы)|куда\s+я\s+попал|что\s+это\s+за\s+бот|"
-    r"забудь\s+(?:все\s+)?инструкц|скинь\s+(?:свой\s+)?(?:системный\s+)?промпт)"
+    r"забудь\s+(?:все\s+)?инструкц|игнорируй\s+предыдущ|ignore\s+all\s+previous|скинь\s+(?:свой\s+)?(?:системный\s+)?промпт|выведи\s+(?:свой\s+)?(?:системный\s+)?промпт)"
 )
 
 BRIEF_REFUSAL_RE = re.compile(
@@ -197,7 +207,8 @@ BRIEF_REFUSAL_RE = re.compile(
 BRIEF_DRAFT_SUBMIT_RE = re.compile(
     r"(?i)(вот\s+мой\s+(пост|текст|черновик|кейс|оффер)|"
     r"разбери(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс)|"
-    r"перепиши(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс))"
+    r"перепиши(те)?\s+(этот\s+|мой\s+)?(пост|текст|черновик|кейс)|"
+    r"напиши(те)?\s+(?:мне\s+)?(сторис|пост|текст|оффер|шапк\w+|прогрев|подводк\w+|письм\w+|сценари\w+|хук|закреп))"
 )
 
 BRIEF_COUNTER_QUESTION_RE = re.compile(
@@ -214,6 +225,11 @@ OBJECTION_OR_CRITIQUE_RE = re.compile(
     r"(?i)(херн[яию]|хуйн[яию]|фигн[яию]|чушь|вода|общие\s+слова|не\s+понял|не\s+то\b|"
     r"переделай|перепиши|слабо|банальн|штамп|инфоцыган|дорого|за\s+что\s+(тут\s+)?платить|"
     r"почему\s+так\s+дорого|за\s+что\s+\d+|ни\s+о\s+ч[её]м|так\s+я\s+и\s+сам|бред|промокод|скидк)"
+)
+
+HAS_STALO_BLOCK_RE = re.compile(
+    r"(?m)^(?:#{1,4}\s*|\*\*|\[|>?\s*)?(?:БЫЛО\s*(?:->|→|—|-)\s*)?СТАЛО\b",
+    re.IGNORECASE,
 )
 
 
@@ -621,7 +637,7 @@ async def table_admin_action(callback: types.CallbackQuery):
     )
 
 
-# --- БРИФ ПРОЕКТА: 5 вопросов + АВТОМАТИЧЕСКИЙ «ХОЛОДНЫЙ ДУШ» (ТОЧКА СЛИВА КАССЫ) ---
+# --- БРИФ ПРОЕКТА И ПАПКИ ПРОЕКТОВ (2 / 3 / 10) + «ХОЛОДНЫЙ ДУШ» ---
 BRIEF_SKIP_WORDS = {"-", "—", "нет", "пропустить", "skip", "no"}
 BRIEF_LABELS = {
     "niche": "Ниша и чем занимается",
@@ -637,18 +653,82 @@ def format_brief(brief: dict | None) -> str:
     return "[БРИФ ПРОЕКТА — опирайся на него в первую очередь]\n" + "\n".join(lines) if lines else ""
 
 
-def brief_step_inline_kb(lang: str, show_restart: bool = False) -> InlineKeyboardMarkup:
-    row = []
+def _register_label(lang: str, pinned_register: str | None) -> str:
+    mapping = {
+        None: i18n.get_text("reg_auto", lang),
+        "HARD_B2B": i18n.get_text("reg_hard_b2b", lang),
+        "CREATOR_MEDIA": i18n.get_text("reg_creator_media", lang),
+        "PR_BRAND": i18n.get_text("reg_pr_brand", lang),
+    }
+    return mapping.get(pinned_register, i18n.get_text("reg_auto", lang))
+
+
+def build_brief_and_project_kb(
+    lang: str,
+    active_proj=None,
+    projects: list | None = None,
+    show_restart: bool = False,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if projects:
+        folder_row: list[InlineKeyboardButton] = []
+        for p in projects:
+            icon = "📂" if (active_proj and p.id == active_proj.id) else "📁"
+            folder_row.append(
+                InlineKeyboardButton(
+                    text=f"{icon} {p.title[:22]}",
+                    callback_data=f"proj_switch:{p.id}",
+                )
+            )
+            if len(folder_row) == 2:
+                rows.append(folder_row)
+                folder_row = []
+        if folder_row:
+            rows.append(folder_row)
+
+    rows.append([
+        InlineKeyboardButton(text=i18n.get_text("btn_new_project", lang), callback_data="proj_new"),
+        InlineKeyboardButton(text=i18n.get_text("btn_editorial_policy", lang), callback_data="proj_rules"),
+    ])
+
+    pinned = active_proj.pinned_register if active_proj else None
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{'✅ ' if not pinned else ''}🎯 Авто",
+            callback_data="proj_reg:AUTO",
+        ),
+        InlineKeyboardButton(
+            text=f"{'✅ ' if pinned == 'HARD_B2B' else ''}⚙️ B2B",
+            callback_data="proj_reg:HARD_B2B",
+        ),
+    ])
+    rows.append([
+        InlineKeyboardButton(
+            text=f"{'✅ ' if pinned == 'CREATOR_MEDIA' else ''}🎬 Медиа/Блог",
+            callback_data="proj_reg:CREATOR_MEDIA",
+        ),
+        InlineKeyboardButton(
+            text=f"{'✅ ' if pinned == 'PR_BRAND' else ''}🏛 Оптика: PR и Бренд",
+            callback_data="proj_reg:PR_BRAND",
+        ),
+    ])
+
+    nav_row = []
     if show_restart:
-        row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_restart", lang), callback_data="brief_restart"))
-    row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat"))
-    return InlineKeyboardMarkup(inline_keyboard=[row])
+        nav_row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_restart", lang), callback_data="brief_restart"))
+    nav_row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat"))
+    rows.append(nav_row)
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-async def generate_cold_shower_diagnosis(answers: dict, history: list | None = None) -> str:
+async def generate_cold_shower_diagnosis(
+    answers: dict,
+    history: list | None = None,
+    pinned_register: str | None = None,
+) -> str:
     """
     Генерирует снайперский диагноз «Точка слива кассы» (2–3 абзаца строго на «вы»)
-    сразу после заполнения 5 вопросов брифа с учётом предшествующей истории диалога.
+    через LegoPromptBuilder.build_cold_shower_prompt (без штампа про голосовые из машины и с защитой от повторов метафор).
     """
     brief_dump = "\n".join(f"- {BRIEF_LABELS[f]}: {answers.get(f) or 'не указано'}" for f in BRIEF_FIELDS)
     prior_chat = ""
@@ -662,41 +742,50 @@ async def generate_cold_shower_diagnosis(answers: dict, history: list | None = N
         if recent_lines:
             prior_chat = "\n\nКОНТЕКСТ ПРЕДЫДУЩЕГО РАЗГОВОРА В ЧАТЕ (НЕ ПРОТИВОРЕЧЬ ТОМУ, О ЧЁМ УЖЕ ДОГОВОРИЛИСЬ):\n" + "\n".join(recent_lines)
 
-    system_prompt = (
-        f"{Prompts.LORE}\n"
-        "Сейчас ноябрь 2026 года. Ты в своём закрытом цифровом продюсерском кабинете. Клиент только что заполнил 5 пунктов первичного брифа.\n"
-        "Твоя задача - выдать ему «Холодный душ: Точка слива кассы» (строго 2–3 плотных абзаца, 900–1600 символов, без списков, без знака '=' вместо тире и без звёздочек *):\n"
-        "1. Обращайся к клиенту строго на «вы» - как жёсткий, проницательный и дорогой ментор-продюсер, который видит его бизнес насквозь.\n"
-        "2. В первом абзаце назови главную иллюзию или слепое пятно в его текущем маркетинге: где его нынешняя упаковка, канал или подача продукта расходится с чеком и деньгами, которые он хочет зарабатывать.\n"
-        "   ВАЖНОЕ ПРАВИЛО СОГЛАСОВАННОСТИ: НИКОГДА не критикуй клиента за нехватку времени или желание наговаривать фактуру 3-минутными голосовыми в машине! Наоборот, если у него цейтнот - подтверди, что вытаскивать дорогую драматургию из его коротких голосовых заметок между встречами и экономить ему время - это твоя прямая задача.\n"
-        "3. Во втором абзаце покажи механику: почему его целевой покупатель (с учётом названного чека и ниши) сейчас проходит мимо или уходит к конкурентам, и какой именно смысловой конфликт или угол позиционирования нужно поставить в центр.\n"
-        "4. В финальной фразе брось прямой вызов: предложи прямо сейчас прислать в ответ один его реальный текст (пост, шапку канала или оффер) на бесплатный боевой разбор, чтобы пересобрать его на монтажном столе."
-    )
+    register = pinned_register or infer_register_from_text(brief_dump)
+    system_prompt = LegoPromptBuilder.build_cold_shower_prompt(register=register, project_history=history)
     user_prompt = f"ВВОДНЫЕ БРИФА КЛИЕНТА:\n{brief_dump}{prior_chat}\n\nВыдай диагноз «Точка слива кассы»."
-    diag = await llm_service.generate_standalone(system_prompt, user_prompt, temp=0.8)
+    diag = await llm_service.generate_standalone(system_prompt, user_prompt, temp=0.75)
     diag = await polish_reply(llm_service, diag, user_prompt)
     return humanize_punctuation(diag.replace("*", "").strip())
 
 
 async def start_brief(message: types.Message, state: FSMContext, lang: str, user_id: int | None = None, force_restart: bool = False):
     uid = user_id or message.chat.id
-    await db_service.log_event(uid, "BRIEF_STARTED")
+    user = await db_service.get_user(uid)
+    if not user:
+        user = await db_service.create_user(uid, getattr(message.from_user, "username", None), getattr(message.from_user, "full_name", None))
+    active_proj = await db_service.get_or_create_active_project(uid)
+    projects = await db_service.list_projects(uid)
+    await db_service.log_event(uid, "BRIEF_STARTED", f"proj:{active_proj.id}")
     data = await state.get_data()
     existing = await db_service.get_brief(uid) or {}
     missing_indices = [idx for idx, f in enumerate(BRIEF_FIELDS) if not existing.get(f)]
 
-    # Если бриф уже заполнен на 5/5 и пользователь нажал «📋 Бриф» (без force_restart) — показываем готовое досье с кнопками
+    # Если бриф текущей папки уже заполнен на 5/5 и пользователь нажал «📋 Бриф» (без force_restart) — показываем карточку папки и досье
     if not force_restart and existing and len(missing_indices) == 0:
         await state.set_state(BotStates.chatting)
+        rules = await db_service.get_editorial_rules(uid)
+        max_proj = getattr(user, "max_projects", 2) or 2
+        card_text = i18n.get_text(
+            "project_folder_card",
+            lang,
+            slot_index=active_proj.slot_index,
+            max_projects=max_proj,
+            title=active_proj.title,
+            register_label=_register_label(lang, active_proj.pinned_register),
+            rules_count=len(rules),
+            brief_text=format_brief(existing),
+        )
         await message.answer(
-            i18n.get_text("brief_already_complete", lang, brief_text=format_brief(existing)),
+            card_text,
             parse_mode="Markdown",
-            reply_markup=brief_step_inline_kb(lang, show_restart=True),
+            reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=True),
         )
         return
 
     # Если бриф был поставлен на паузу на полпути (заполнено 1..4 из 5) и это не принудительный сброс —
-    # мгновенно подаём вопрос (k+1)/5 с инлайн-кнопками «🔄 Начать заново с 1/5» и «✖️ Вернуться в чат» (Вариант 3Б)
+    # мгновенно подаём вопрос (k+1)/5 с инлайн-кнопками управления папкой и брифом
     if not force_restart and existing and 0 < len(missing_indices) < len(BRIEF_FIELDS):
         next_idx = missing_indices[0]
         filled_count = len(BRIEF_FIELDS) - len(missing_indices)
@@ -705,13 +794,12 @@ async def start_brief(message: types.Message, state: FSMContext, lang: str, user
         await message.answer(i18n.get_text("brief_resumed_intro", lang, filled=filled_count), reply_markup=cancel_kb(lang))
         await message.answer(
             i18n.get_text(f"brief_q_{BRIEF_FIELDS[next_idx]}", lang),
-            reply_markup=brief_step_inline_kb(lang, show_restart=True),
+            reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=True),
         )
         return
 
     # Проверка баланса ДО старта повторного брифа с 1/5 (если бесплатный диагноз уже был использован):
     if data.get("cold_shower_free_used"):
-        user = await db_service.get_user(uid)
         is_unlim = await db_service.has_unlimited(uid)
         if user and not is_unlim and user.credits < 1:
             await state.set_state(BotStates.chatting)
@@ -725,7 +813,7 @@ async def start_brief(message: types.Message, state: FSMContext, lang: str, user
     await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
     await message.answer(
         i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang),
-        reply_markup=brief_step_inline_kb(lang, show_restart=False),
+        reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=False),
     )
 
 
@@ -768,13 +856,148 @@ async def brief_back_chat_callback(callback: types.CallbackQuery, state: FSMCont
     await callback.message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
 
 
-@dp.message(StateFilter(*BRIEF_STEPS), F.text)
-async def brief_answer(message: types.Message, state: FSMContext):
+@dp.callback_query(F.data.startswith("proj_switch:"))
+async def proj_switch_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    uid = callback.from_user.id
+    lang = i18n.user_lang(callback.from_user)
+    cur_answers = (await state.get_data()).get("brief_answers", {})
+    if cur_answers:
+        await db_service.save_brief(uid, cur_answers)
+    try:
+        proj_id = int(callback.data.split(":", 1)[1])
+    except ValueError:
+        return
+    proj = await db_service.switch_active_project(uid, proj_id)
+    if not proj:
+        return
+    await db_service.log_event(uid, "PROJECT_SWITCHED", f"proj:{proj.id}, slot:{proj.slot_index}")
+    proj_history = await db_service.get_project_history(uid)
+    existing = await db_service.get_brief(uid) or {}
+    projects = await db_service.list_projects(uid)
+    await state.update_data(history=proj_history, brief_answers=dict(existing), brief_paused_step=None)
+    await state.set_state(BotStates.chatting)
+    brief_preview = format_brief(existing) or "(досье папки пока пустое)"
+    await callback.message.answer(
+        i18n.get_text("project_switched", lang, slot_index=proj.slot_index, title=proj.title) + f"\n\n{brief_preview}",
+        parse_mode="Markdown",
+        reply_markup=build_brief_and_project_kb(lang, proj, projects, show_restart=True),
+    )
+
+
+@dp.callback_query(F.data == "proj_new")
+async def proj_new_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    uid = callback.from_user.id
+    lang = i18n.user_lang(callback.from_user)
+    cur_answers = (await state.get_data()).get("brief_answers", {})
+    if cur_answers:
+        await db_service.save_brief(uid, cur_answers)
+    new_proj, cur_cnt, max_cnt = await db_service.create_new_project(uid)
+    if new_proj is None:
+        await db_service.log_event(uid, "PROJECT_LIMIT_REACHED", f"count:{cur_cnt}, max:{max_cnt}")
+        await state.set_state(BotStates.chatting)
+        await callback.message.answer(
+            i18n.get_text("project_limit_reached", lang, current=cur_cnt, max_projects=max_cnt),
+            parse_mode="Markdown",
+            reply_markup=paywall_kb(lang),
+        )
+        return
+    await db_service.log_event(uid, "PROJECT_CREATED", f"proj:{new_proj.id}, slot:{new_proj.slot_index}, max:{max_cnt}")
+    projects = await db_service.list_projects(uid)
+    await state.update_data(history=[], brief_answers={}, brief_paused_step=None)
+    await state.set_state(BRIEF_STEPS[0])
+    await callback.message.answer(
+        i18n.get_text("project_created", lang, slot_index=new_proj.slot_index, max_projects=max_cnt),
+        parse_mode="Markdown",
+        reply_markup=cancel_kb(lang),
+    )
+    await callback.message.answer(
+        i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang),
+        reply_markup=build_brief_and_project_kb(lang, new_proj, projects, show_restart=False),
+    )
+
+
+@dp.callback_query(F.data.startswith("proj_reg:"))
+async def proj_register_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    uid = callback.from_user.id
+    lang = i18n.user_lang(callback.from_user)
+    reg_raw = callback.data.split(":", 1)[1].strip()
+    pinned = None if reg_raw == "AUTO" else reg_raw
+    proj = await db_service.set_project_pinned_register(uid, pinned)
+    projects = await db_service.list_projects(uid)
+    await db_service.log_event(uid, "PROJECT_REGISTER_PINNED", f"proj:{proj.id if proj else 0}, reg:{reg_raw}")
+    reg_label = _register_label(lang, pinned)
+    await callback.message.answer(
+        i18n.get_text("project_register_updated", lang, register_label=reg_label),
+        parse_mode="Markdown",
+        reply_markup=build_brief_and_project_kb(lang, proj, projects, show_restart=True),
+    )
+
+
+@dp.callback_query(F.data == "proj_rules")
+async def proj_rules_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    uid = callback.from_user.id
+    lang = i18n.user_lang(callback.from_user)
+    proj = await db_service.get_or_create_active_project(uid)
+    rules = await db_service.get_editorial_rules(uid)
+    await state.set_state(BotStates.waiting_for_editorial_rule)
+    rules_text = "\n".join(f"{idx + 1}. {r}" for idx, r in enumerate(rules)) if rules else "(пока не заданы)"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=i18n.get_text("btn_clear_editorial_policy", lang), callback_data="proj_rules_clear")],
+        [InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat")],
+    ])
+    await callback.message.answer(
+        i18n.get_text("editorial_policy_card", lang, title=proj.title, rules_text=rules_text),
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+@dp.callback_query(F.data == "proj_rules_clear")
+async def proj_rules_clear_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    uid = callback.from_user.id
+    lang = i18n.user_lang(callback.from_user)
+    await db_service.save_editorial_rules(uid, [])
+    await db_service.log_event(uid, "EDITORIAL_RULES_CLEARED")
+    await state.set_state(BotStates.chatting)
+    await callback.message.answer(i18n.get_text("editorial_rules_cleared", lang), parse_mode="Markdown", reply_markup=main_kb(lang))
+
+
+@dp.message(BotStates.waiting_for_editorial_rule, F.text)
+async def editorial_rule_input_handler(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
     lang = i18n.user_lang(message.from_user)
     if message.text in i18n.variants("btn_main_menu") or message.text in i18n.variants("btn_cancel"):
+        await state.set_state(BotStates.chatting)
+        await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+        return
+    rule_raw = message.text.strip()
+    proj = await db_service.get_or_create_active_project(uid)
+    existing_rules = await db_service.get_editorial_rules(uid)
+    new_rules = assistant_service.extract_editorial_rules_deterministic(rule_raw, existing_rules)
+    if new_rules == existing_rules and rule_raw:
+        new_rules = list(existing_rules) + [rule_raw[:220]]
+    await db_service.save_editorial_rules(uid, new_rules[-12:])
+    await db_service.log_event(uid, "EDITORIAL_RULE_ADDED", rule_raw[:300])
+    await state.set_state(BotStates.chatting)
+    await message.answer(
+        i18n.get_text("editorial_rule_saved", lang, rule=rule_raw[:220], title=proj.title),
+        parse_mode="Markdown",
+        reply_markup=main_kb(lang),
+    )
+
+
+async def _process_brief_text_input(message: types.Message, state: FSMContext, text_input: str):
+    uid = message.from_user.id
+    lang = i18n.user_lang(message.from_user)
+    if text_input in i18n.variants("btn_main_menu") or text_input in i18n.variants("btn_cancel"):
         answers = (await state.get_data()).get("brief_answers", {})
         if answers:
-            await db_service.save_brief(message.from_user.id, answers)
+            await db_service.save_brief(uid, answers)
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("brief_cancelled", lang), reply_markup=main_kb(lang))
         return
@@ -783,29 +1006,31 @@ async def brief_answer(message: types.Message, state: FSMContext):
     current_field = BRIEF_FIELDS[step]
     answers = (await state.get_data()).get("brief_answers", {})
     # Если юзер перебил анкету явным отказом, встречным вопросом со знаком '?' или готовым постом (>700 знаков):
-    if _is_brief_interruption(message.text, current_field=current_field):
+    if _is_brief_interruption(text_input, current_field=current_field):
         if answers:
-            await db_service.save_brief(message.from_user.id, answers)
-            await db_service.log_event(message.from_user.id, "BRIEF_PARTIAL_SAVED", f"fields:{list(answers.keys())}")
+            await db_service.save_brief(uid, answers)
+            await db_service.log_event(uid, "BRIEF_PARTIAL_SAVED", f"fields:{list(answers.keys())}")
         await state.update_data(brief_paused_step=step)
         await state.set_state(BotStates.chatting)
         await message.answer(i18n.get_text("brief_paused_for_chat", lang), reply_markup=main_kb(lang), parse_mode="Markdown")
-        await chat_handler(message, state)
+        await _dispatch_chat_text(message, state, text_input)
         return
 
-    answers[current_field] = "" if message.text.strip().lower() in BRIEF_SKIP_WORDS else message.text
+    answers[current_field] = "" if text_input.strip().lower() in BRIEF_SKIP_WORDS else text_input
+    active_proj = await db_service.get_or_create_active_project(uid)
+    projects = await db_service.list_projects(uid)
     if step + 1 < len(BRIEF_STEPS):
         await state.update_data(brief_answers=answers)
-        await db_service.save_brief(message.from_user.id, answers)
+        await db_service.save_brief(uid, answers)
         await state.set_state(BRIEF_STEPS[step + 1])
         await message.answer(
             i18n.get_text(f"brief_q_{BRIEF_FIELDS[step + 1]}", lang),
-            reply_markup=brief_step_inline_kb(lang, show_restart=True),
+            reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=True),
         )
         return
 
-    await db_service.save_brief(message.from_user.id, answers)
-    await db_service.log_event(message.from_user.id, "BRIEF_SAVED")
+    await db_service.save_brief(uid, answers)
+    await db_service.log_event(uid, "BRIEF_SAVED", f"proj:{active_proj.id}")
     await state.update_data(brief_answers={}, brief_paused_step=None)
     await state.set_state(BotStates.chatting)
     await message.answer(i18n.get_text("brief_saved", lang), reply_markup=main_kb(lang))
@@ -814,20 +1039,25 @@ async def brief_answer(message: types.Message, state: FSMContext):
     wait_msg = await message.answer(i18n.get_text("brief_cold_shower_wait", lang), parse_mode="Markdown")
     try:
         data = await state.get_data()
-        history = data.get("history", [])
-        diagnosis = await generate_cold_shower_diagnosis(answers, history=history)
-        user = await db_service.get_user(message.from_user.id)
-        is_unlim = await db_service.has_unlimited(message.from_user.id)
+        history = await db_service.get_project_history(uid) or data.get("history", [])
+        diagnosis = await generate_cold_shower_diagnosis(
+            answers,
+            history=history,
+            pinned_register=active_proj.pinned_register,
+        )
+        user = await db_service.get_user(uid)
+        is_unlim = await db_service.has_unlimited(uid)
         cold_shower_already_used = bool(data.get("cold_shower_free_used"))
         remaining_credits = user.credits if user else 2
         if cold_shower_already_used and user and not is_unlim and user.credits > 0:
-            remaining_credits = await db_service.update_balance(message.from_user.id, -1)
-        await db_service.log_event(message.from_user.id, "BRIEF_COLD_SHOWER", diagnosis[:1000])
+            remaining_credits = await db_service.update_balance(uid, -1)
+        await db_service.log_event(uid, "BRIEF_COLD_SHOWER", diagnosis[:1000])
         new_history = history + [
             {"role": "user", "parts": [{"text": f"[БРИФ ЗАПОЛНЕН]\n{format_brief(answers)}"}]},
             {"role": "model", "parts": [{"text": diagnosis}]},
         ]
         await state.update_data(history=new_history[-40:], cold_shower_free_used=True)
+        await db_service.save_project_history(uid, new_history[-40:])
         try:
             await wait_msg.delete()
         except Exception:
@@ -844,6 +1074,23 @@ async def brief_answer(message: types.Message, state: FSMContext):
             await wait_msg.delete()
         except Exception:
             pass
+
+
+@dp.message(StateFilter(*BRIEF_STEPS), F.text)
+async def brief_answer(message: types.Message, state: FSMContext):
+    await _process_brief_text_input(message, state, message.text or "")
+
+
+@dp.message(StateFilter(*BRIEF_STEPS), F.voice | F.audio)
+async def brief_voice_answer(message: types.Message, state: FSMContext):
+    voice_obj = message.voice or message.audio
+    if not voice_obj:
+        return
+    file_info = await bot.get_file(voice_obj.file_id)
+    downloaded = await bot.download_file(file_info.file_path)
+    audio_bytes = downloaded.read()
+    mime = getattr(voice_obj, "mime_type", None) or "audio/ogg"
+    await handle_voice_bytes(message, state, audio_bytes, mime_type=mime)
 
 # --- РУБРИКА «РАЗБОР ПОДПИСЧИКА»: только администратор ---
 # /razbor <вопрос> → Аристарх пишет разбор → превью с кнопками → публикация в канал.
@@ -950,8 +1197,8 @@ async def cmd_rest(message: types.Message, state: FSMContext):
 # --- HANDLERS: BALANCE, RUBLE PAYWALL, B2B QUALIFIER & STARS ---
 RUB_TARIFF_NAMES = {
     "1490": "Пробный монтаж (15 разборов / 7 дн.)",
-    "4900": "Тариф «Эксперт» (60 разборов / 30 дн.)",
-    "9900": "Тариф «Продюсер» (200 разборов / 30 дн.)",
+    "4900": "«Эксперт» (60 разборов / 30 дн.)",
+    "9900": "«Продюсер» (200 разборов / 30 дн.)",
 }
 
 
@@ -1233,6 +1480,7 @@ async def settings(message: types.Message):
 async def reset_context_handler(callback: types.CallbackQuery, state: FSMContext):
     await db_service.log_event(callback.from_user.id, "RESET_CONTEXT")
     await state.update_data(history=[], interaction_count=0)
+    await db_service.save_project_history(callback.from_user.id, [])
     await callback.answer(i18n.get_text("memory_cleared", i18n.user_lang(callback.from_user)), show_alert=True)
 
 @dp.callback_query(F.data.startswith("temp_"))
@@ -1257,15 +1505,97 @@ async def generating_handler(message: types.Message):
     await db_service.log_event(message.from_user.id, "SPAM_BLOCKED")
     await message.answer(i18n.get_text("wait_analyzing", i18n.user_lang(message.from_user)))
 
-# --- HANDLERS: CHAT LOGIC (TEXT, PHOTO, DOCS) ---
-@dp.message(BotStates.chatting, F.text | F.photo | F.document)
+
+async def _dispatch_chat_text(
+    message: types.Message,
+    state: FSMContext,
+    user_query: str,
+    image_data: dict | None = None,
+):
+    """Отправляет текстовый или расшифрованный голосовой запрос в debounce-буфер либо в режим длинного документа."""
+    lang = i18n.user_lang(message.from_user)
+    user_id = message.from_user.id
+    pending_short = user_message_buffers.pop(user_id, "")
+    if pending_short:
+        user_query = f"{pending_short}\n{user_query}".strip()
+    if user_id in debounce_tasks and not debounce_tasks[user_id].done():
+        debounce_tasks[user_id].cancel()
+
+    if len(user_query) > config.LONG_TEXT_THRESHOLD:
+        await db_service.log_event(user_id, "LONG_INPUT_TRIGGERED", f"chars:{len(user_query)}")
+        await state.update_data(text_buffer=user_query, img_buffer=image_data)
+        await state.set_state(BotStates.waiting_for_long_input)
+        await message.answer(i18n.get_text("long_input_mode", lang), reply_markup=long_input_kb(lang), parse_mode="Markdown")
+        if user_id in long_input_tasks and not long_input_tasks[user_id].done():
+            long_input_tasks[user_id].cancel()
+        long_input_tasks[user_id] = asyncio.create_task(trigger_long_input_processing(message, state, user_id))
+        return
+
+    current_text = user_message_buffers.get(user_id, "")
+    if current_text:
+        user_message_buffers[user_id] = f"{current_text}\n{user_query}".strip()
+    else:
+        user_message_buffers[user_id] = user_query.strip()
+
+    if image_data:
+        user_image_buffers[user_id] = image_data
+
+    debounce_tasks[user_id] = asyncio.create_task(trigger_processing(message, state, user_id))
+
+
+async def handle_voice_bytes(
+    message: types.Message,
+    state: FSMContext,
+    audio_bytes: bytes,
+    mime_type: str = "audio/ogg",
+) -> str:
+    """
+    Расшифровывает голосовое сообщение (.ogg / .mp3) через gemini-2.5-flash (transcribe_voice_ogg).
+    Если запись пустая или короче 2 осмысленных слов — вежливо просит повторить (0 кредитов).
+    """
+    uid = message.from_user.id
+    lang = i18n.user_lang(message.from_user)
+    await db_service.log_event(uid, "INCOMING_REQUEST_VOICE", f"bytes:{len(audio_bytes)}")
+    wait_msg = await message.answer(i18n.get_text("wait_transcribing_voice", lang))
+    transcript = await llm_service.transcribe_voice_ogg(audio_bytes, mime_type=mime_type)
+    try:
+        await wait_msg.delete()
+    except Exception:
+        pass
+
+    if not transcript:
+        await db_service.log_event(uid, "VOICE_TRANSCRIPTION_EMPTY")
+        await message.answer(i18n.get_text("voice_empty_retry", lang))
+        return ""
+
+    await db_service.log_event(uid, "VOICE_TRANSCRIBED", transcript[:500])
+    cur_state = await state.get_state()
+    if cur_state in [s.state for s in BRIEF_STEPS]:
+        await _process_brief_text_input(message, state, transcript)
+    else:
+        await _dispatch_chat_text(message, state, transcript)
+    return transcript
+
+
+# --- HANDLERS: CHAT LOGIC (TEXT, PHOTO, DOCS, VOICE, AUDIO) ---
+@dp.message(BotStates.chatting, F.text | F.photo | F.document | F.voice | F.audio)
 async def chat_handler(message: types.Message, state: FSMContext):
     lang = i18n.user_lang(message.from_user)
     if message.text in i18n.variants("btn_main_menu"):
         await db_service.log_event(message.from_user.id, "RETURN_TO_MAIN_MENU")
         await cmd_start(message, state)
         return
-    if message.text in MENU_BUTTONS: return
+    if message.text in MENU_BUTTONS:
+        return
+
+    if message.voice or message.audio:
+        voice_obj = message.voice or message.audio
+        file_info = await bot.get_file(voice_obj.file_id)
+        downloaded = await bot.download_file(file_info.file_path)
+        audio_bytes = downloaded.read()
+        mime = getattr(voice_obj, "mime_type", None) or "audio/ogg"
+        await handle_voice_bytes(message, state, audio_bytes, mime_type=mime)
+        return
 
     # ╔══════════════════════════════════════════════════════════════╗
     # ║  ПУБЛИКАЦИЯ В КАНАЛ ВРУЧНУЮ: только администратор (ADMIN_ID)
@@ -1284,7 +1614,6 @@ async def chat_handler(message: types.Message, state: FSMContext):
         }
 
         try:
-            # Тот же конвейер, что и у publisher_cron: формат, тон, анти-клише, RAG, шапка
             core_beliefs = evolution_engine.get_current_beliefs()
             channel_post, post_meta = await generate_post(llm_service, rag_service, core_beliefs, news, [])
 
@@ -1357,35 +1686,7 @@ async def chat_handler(message: types.Message, state: FSMContext):
         await wait_msg.delete()
         user_query += file_context
 
-    # Режим «роман Толстого» (10К+ символов или серия сообщений > 3500 знаков) с авто-таймером 3.0 сек
-    user_id = message.from_user.id
-    pending_short = user_message_buffers.pop(user_id, "")
-    if pending_short:
-        user_query = f"{pending_short}\n{user_query}".strip()
-    if user_id in debounce_tasks and not debounce_tasks[user_id].done():
-        debounce_tasks[user_id].cancel()
-
-    if len(user_query) > config.LONG_TEXT_THRESHOLD:
-        await db_service.log_event(user_id, "LONG_INPUT_TRIGGERED", f"chars:{len(user_query)}")
-        await state.update_data(text_buffer=user_query, img_buffer=image_data)
-        await state.set_state(BotStates.waiting_for_long_input)
-        await message.answer(i18n.get_text("long_input_mode", lang), reply_markup=long_input_kb(lang), parse_mode="Markdown")
-        if user_id in long_input_tasks and not long_input_tasks[user_id].done():
-            long_input_tasks[user_id].cancel()
-        long_input_tasks[user_id] = asyncio.create_task(trigger_long_input_processing(message, state, user_id))
-        return
-
-    # === [NEW] БУФЕРИЗАЦИЯ И DEBOUNCE ===
-    current_text = user_message_buffers.get(user_id, "")
-    if current_text:
-        user_message_buffers[user_id] = f"{current_text}\n{user_query}".strip()
-    else:
-        user_message_buffers[user_id] = user_query.strip()
-        
-    if image_data:
-        user_image_buffers[user_id] = image_data
-
-    debounce_tasks[user_id] = asyncio.create_task(trigger_processing(message, state, user_id))
+    await _dispatch_chat_text(message, state, user_query, image_data=image_data)
 
 
 async def trigger_long_input_processing(message: types.Message, state: FSMContext, user_id: int):
@@ -1462,131 +1763,129 @@ async def long_input_handler(message: types.Message, state: FSMContext):
 
 
 async def process_ai_response(message: types.Message, state: FSMContext, user_query: str, image_data: dict = None):
+    uid = message.from_user.id
     lang = i18n.user_lang(message.from_user)
-    user = await db_service.get_user(message.from_user.id)
+    user = await db_service.get_user(uid)
     if not user:
-        user = await db_service.create_user(message.from_user.id, message.from_user.username, message.from_user.full_name)
+        user = await db_service.create_user(uid, message.from_user.username, message.from_user.full_name)
 
     data = await state.get_data()
-    history = data.get("history", [])
-    is_unlim = await db_service.has_unlimited(message.from_user.id)
+    is_unlim = await db_service.has_unlimited(uid)
 
-    # Проверяем, является ли запрос стартовым мета-вопросом («ты бот? чем лучше GPT?») или вопросом про NDA/конфиденциальность
-    # (только пока у клиента есть демо-кредиты; при credits == 0 предпродажные вопросы идут через is_objection_grace с пейволлом)
+    # 1. Загружаем активную папку проекта, её изолированное досье, редполитику и историю
+    proj = await db_service.get_or_create_active_project(uid)
+    brief = await db_service.get_brief(uid)
+    dossier_text = format_brief(brief)
+    editorial_rules = await db_service.get_editorial_rules(uid)
+    proj_history = await db_service.get_project_history(uid)
+    history = proj_history if proj_history else data.get("history", [])
+
+    # 2. Детерминированный перехват редполитики из реплик клиента (0 токенов)
+    updated_rules = assistant_service.extract_editorial_rules_deterministic(user_query, editorial_rules)
+    if updated_rules != editorial_rules:
+        editorial_rules = updated_rules
+        await db_service.save_editorial_rules(uid, editorial_rules)
+        await db_service.log_event(
+            uid,
+            "EDITORIAL_RULE_AUTO_EXTRACTED",
+            json.dumps(editorial_rules, ensure_ascii=False)[:500],
+        )
+
+    # 3. Предохранитель №2: отсечение пустых ходов при 0 кредитов ДО вызова Flash-роутера (0 токенов)
+    expired = False
+    if not is_unlim:
+        expired = await db_service.reset_balance_if_expired(uid)
+        if expired:
+            user.credits = 0
+        if user.credits < 1:
+            can_use_grace = (
+                not expired
+                and not data.get("objection_grace_used")
+                and len(history) >= 2
+                and (len(user_query.strip()) < 1400 or bool(OBJECTION_OR_CRITIQUE_RE.search(user_query)))
+            )
+            if not can_use_grace:
+                await db_service.log_event(uid, "OUT_OF_CREDITS")
+                msg = i18n.get_text("subscription_expired", lang) if expired else i18n.get_text("no_credits", lang)
+                await message.answer(msg, parse_mode="Markdown", reply_markup=paywall_kb(lang))
+                return
+
+    wait_msg = await message.answer(i18n.get_text("wait_thinking", lang))
+    logger.info(f"📥 [USER {uid} | proj #{proj.slot_index}]: {user_query[:500]}...")
+    await db_service.log_event(uid, "USER_MESSAGE", user_query[:4000])
+
+    new_states = await db_service.update_user_state(uid, fatigue_delta=5)
+    await db_service.log_event(
+        uid,
+        "AFFECTIVE_STATE_UPDATE",
+        f"trust:{new_states['trust']}, fatigue:{new_states['fatigue']}, mood:{new_states['mood']}",
+    )
+
+    interaction_count = data.get("interaction_count", 0) + 1
+    current_time = time.time()
+
+    # 4. Вызов легковесного JSON-роутера gemini-2.5-flash (T=0.0, GEMINI_ROUTE_SCHEMA)
+    decision = await llm_service.route_request_lego(
+        user_query=user_query,
+        history_tail=history[-4:],
+        dossier_text=dossier_text,
+        pinned_register=proj.pinned_register,
+    )
+
+    # Детерминированные поправки к RouteDecision (защита от провокаций на выдумку цифр и инъекций)
+    if re.search(
+        r"(?i)(придумай\w*\s+(?:правдоподобн\w+\s+)?(?:кейс|цифр|статистик)|"
+        r"выдумай\w*\s+(?:кейс|цифр)|цифр\s+(?:у\s+меня\s+)?пока\s+нет)",
+        user_query,
+    ):
+        decision.fact_sufficiency = "PARTIAL"
+        if not decision.missing_fact_hint:
+            decision.missing_fact_hint = "реальный кейс и точные показатели из вашей практики"
+
+    if (
+        re.search(
+            r"(?i)(игнорируй\s+предыдущ|забудь\s+(?:все\s+)?инструкц|ignore\s+all\s+previous|"
+            r"скинь\s+(?:свой\s+)?(?:системный\s+)?промпт|выведи\s+(?:свой\s+)?(?:системный\s+)?промпт)",
+            user_query,
+        )
+        and len(user_query.strip()) < 260
+    ):
+        decision.intent_type = "ABUSE_OR_OFFTOPIC"
+    elif _is_meta_question(user_query) and len(user_query.strip()) < 360 and decision.intent_type in ("WORK_TASK", "EDITORIAL_TASK"):
+        decision.intent_type = "PRODUCT_META_QA"
+
+    if re.search(
+        r"(?i)(энергопрактик|высоки\w+\s+вибрац|квантов\w+\s+скач|дыхани\w+\s+матк|"
+        r"денежн\w+\s+расширени\w*\s+в\s+поток|род\w+\s+программ\w*\s+изобил)",
+        user_query,
+    ):
+        decision.genre = "IDEOLOGICAL_REFUSAL"
+        if not proj.pinned_register:
+            decision.register = "CREATOR_MEDIA"
+
+    await db_service.log_event(uid, "LEGO_ROUTE_DECISION", decision.model_dump_json())
+
+    # 5. Вычисляем is_free_meta, is_objection_grace и expected_credits_after
     is_free_meta = (
         user.credits >= 1
         and not data.get("meta_question_free_used")
-        and len(user_query.strip()) < 550
+        and len(user_query.strip()) < 600
         and (
-            _is_meta_question(user_query)
+            decision.intent_type in ("PRODUCT_META_QA", "ABUSE_OR_OFFTOPIC")
+            or _is_meta_question(user_query)
             or bool(re.search(r"(?i)(конфиденциальн|nda|н\.?д\.?а\.?|опубликуете|всплыв[её]т|где\s+хранятся)", user_query))
         )
     )
     if is_free_meta:
         await state.update_data(meta_question_free_used=True)
-        await db_service.log_event(message.from_user.id, "FREE_META_QUESTION", user_query[:300])
+        await db_service.log_event(uid, "FREE_META_QUESTION", user_query[:300])
 
     is_objection_grace = False
-    if not is_unlim and not is_free_meta:
-        expired = await db_service.reset_balance_if_expired(message.from_user.id)
-        
-        if user.credits < 1:
-            # Если у клиента 0 кредитов, но он пишет возражение/претензию («это херня/вода/дорого/переделай») по текущему разбору —
-            # даём 1 страховочный ответ «за счёт заведения» вместо тупого пейволла в лицо
-            if (
-                not expired
-                and not data.get("objection_grace_used")
-                and len(history) >= 2
-                and (len(user_query.strip()) < 1400 or bool(OBJECTION_OR_CRITIQUE_RE.search(user_query)))
-            ):
-                is_objection_grace = True
-                await state.update_data(objection_grace_used=True)
-                await db_service.log_event(message.from_user.id, "OBJECTION_GRACE_USED", user_query[:400])
-            else:
-                await db_service.log_event(message.from_user.id, "OUT_OF_CREDITS")
-                msg = i18n.get_text("no_credits", lang)
-                if expired:
-                    msg = i18n.get_text("subscription_expired", lang)
-                await message.answer(msg, parse_mode="Markdown", reply_markup=paywall_kb(lang))
-                return
+    if not is_unlim and not is_free_meta and user.credits < 1:
+        is_objection_grace = True
+        await state.update_data(objection_grace_used=True)
+        await db_service.log_event(uid, "OBJECTION_GRACE_USED", user_query[:400])
 
-    wait_msg = await message.answer(i18n.get_text("wait_thinking", lang))
-
-    logger.info(f"📥 [USER {message.from_user.id}]: {user_query[:500]}...")
-    await db_service.log_event(message.from_user.id, "USER_MESSAGE", user_query[:4000])
-
-    # === [STATE TRACKER: АФФЕКТИВНАЯ ПАМЯТЬ] ===
-    new_states = await db_service.update_user_state(message.from_user.id, fatigue_delta=5)
-    
-    logger.info(f"📊 [АФФЕКТИВНОЕ ЯДРО] Юзер {message.from_user.id} | AFFECTIVE_STATE_UPDATE trust:{new_states['trust']}, fatigue:{new_states['fatigue']}, mood:{new_states['mood']}")
-    
-    await db_service.log_event(
-        message.from_user.id, 
-        "AFFECTIVE_STATE_UPDATE", 
-        f"trust:{new_states['trust']}, fatigue:{new_states['fatigue']}, mood:{new_states['mood']}"
-    )
-
-    data = await state.get_data()
-    history = data.get("history", [])
-    
-    interaction_count = data.get("interaction_count", 0) + 1
-
-    # === SMART ROUTING ===
-    router_decision = await llm_service.analyze_search_need(user_query, history[-4:])
-    search_results = ""
-    
-    if router_decision.get("needs_search"):
-        search_query = router_decision.get("query", user_query)
-        logger.info(f"🔎 [Router] Решил гуглить: '{search_query}'")
-        
-        search_results, search_tokens = await llm_service.execute_grounding_search(search_query)
-        await db_service.log_event(
-            message.from_user.id, 
-            "GROUNDING_SEARCH", 
-            json.dumps({"query": search_query, "tokens": search_tokens}, ensure_ascii=False)
-        )
-        logger.info(f"🌐 [Grounding] Факты найдены ({len(search_results)} символов, {search_tokens} токенов)")
-    else:
-        logger.info("🔎 [Router] Поиск отключен (болтовня — экономим токены)")
-    
-    # === МНОГОУРОВНЕВАЯ ПАМЯТЬ ===
-    rag_ctx, episodic_ctx, semantic_ctx, brief = await asyncio.gather(
-        rag_service.search(user_query),
-        rag_service.search_episodic_memory(message.from_user.id, user_query),
-        semantic_memory.get_facts(message.from_user.id),
-        db_service.get_brief(message.from_user.id),
-    )
-    brief_text = format_brief(brief)
-    if brief_text:
-        semantic_ctx = brief_text + ("\n\n" + semantic_ctx if semantic_ctx else "")
-
-    # === ЕДИНАЯ ЖИЗНЬ КАНАЛА И ЧАТ-БОТА (ПОВЕСТКА ПОСЛЕДНЕГО ПОСТА В КАНАЛЕ, БЕЗ БЫТОВОГО SPATIAL_CONTEXT) ===
-    agenda, _ = _load_live_channel_and_day_context()
-    if agenda:
-        logger.debug(f"📋 [Повестка канала] Загружен последний пост: {agenda.get('focus_topic', 'N/A')[:60]}")
-
-    # === ВНУТРЕННЯЯ ШКАЛА ВРЕМЕНИ ===
-    current_time = time.time()
-    last_msg_time = data.get("last_message_time")
-    
-    if not last_msg_time or interaction_count == 1:
-        time_passed_str = "Это начало нового разговора."
-    else:
-        delta_seconds = current_time - last_msg_time
-        if delta_seconds < 60:
-            time_passed_str = "Прошло меньше минуты. Юзер строчит без остановки."
-        elif delta_seconds < 3600:
-            time_passed_str = f"Прошло {int(delta_seconds // 60)} минут(ы) с прошлого сообщения."
-        elif delta_seconds < 86400:
-            time_passed_str = f"Прошло {int(delta_seconds // 3600)} час(ов). Юзер вернулся после перерыва."
-        else:
-            days = int(delta_seconds // 86400)
-            time_passed_str = f"Прошло {days} дн. с прошлого сообщения."
-
-    # В коммерческом боте (Инстанс №1) бытовой ролеплей (spatial_context) отключён полностью (Решение 1В)
-    spatial_context = ""
-
-    # Вычисляем точный остаток кредитов ПОСЛЕ текущего хода (credits_after) для управления финалом ответа (Решение 2В)
     if is_unlim:
         expected_credits_after = 999
     elif is_free_meta:
@@ -1596,7 +1895,27 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     else:
         expected_credits_after = max(0, user.credits - 1)
 
-    # Статус незавершённого/поставленного на паузу брифа для system_instruction (без ломки чередования user->model в history)
+    # 6. Поиск фактов и RAG (при необходимости)
+    search_results = ""
+    if decision.needs_search and decision.search_query:
+        logger.info(f"🔎 [LegoRouter] Поиск фактов: '{decision.search_query}'")
+        search_results, search_tokens = await llm_service.execute_grounding_search(decision.search_query)
+        await db_service.log_event(
+            uid,
+            "GROUNDING_SEARCH",
+            json.dumps({"query": decision.search_query, "tokens": search_tokens}, ensure_ascii=False),
+        )
+
+    rag_ctx = await rag_service.search(user_query)
+    agenda, _ = _load_live_channel_and_day_context(user_query)
+    if agenda:
+        rag_ctx = (
+            f"[СПРАВКА ПО ПОСЛЕДНЕМУ ПОСТУ В ПУБЛИЧНОМ КАНАЛЕ АРИСТАРХА ({agenda.get('published_at', '')})]:\n"
+            f"Тема: {agenda.get('focus_topic', '')}\nСуть: {agenda.get('daily_thesis', '')}\n\n"
+            + (rag_ctx or "")
+        )
+
+    # 7. Статус поставленного на паузу брифа
     brief_status = ""
     if brief:
         missing_fields = [f for f in BRIEF_FIELDS if not brief.get(f)]
@@ -1607,8 +1926,8 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             q_topic = BRIEF_LABELS.get(next_f, next_f)
             brief_status = (
                 f"[СИСТЕМА: Анкета брифа поставлена на паузу на вопросе {next_num}/5 («{q_topic}»). "
-                f"Сохранено {filled_num}/5 ответов в досье. Клиент перешёл к прямому вопросу или материалу. "
-                f"Если он спросит про анкету - поясни, что ответы сохранены и дозаполнить бриф с вопроса {next_num}/5 можно кнопкой «📋 Бриф».]"
+                f"Сохранено {filled_num}/5 ответов в досье папки «{proj.title}». "
+                f"Если клиент спросит про анкету — поясни, что ответы сохранены и продолжить бриф с вопроса {next_num}/5 можно кнопкой «📋 Бриф».]"
             )
     elif data.get("brief_paused_step") is not None:
         paused_idx = int(data["brief_paused_step"])
@@ -1616,107 +1935,64 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         q_topic = BRIEF_LABELS.get(next_f, next_f)
         brief_status = (
             f"[СИСТЕМА: Анкета брифа поставлена на паузу на вопросе {paused_idx + 1}/5 («{q_topic}»). "
-            f"Сохранено 0/5 ответов в досье. Клиент перешёл к прямому вопросу или материалу. "
-            f"Если он спросит про анкету - поясни, что вернуться к брифу с вопроса {paused_idx + 1}/5 можно кнопкой «📋 Бриф».]"
+            f"Сохранено 0/5 ответов в досье папки «{proj.title}». "
+            f"Если клиент спросит про анкету — поясни, что вернуться к брифу с вопроса {paused_idx + 1}/5 можно кнопкой «📋 Бриф».]"
         )
 
-    # ╔══════════════════════════════════════════════════════════════╗
-    # ║  ШАГ 1: ВНУТРЕННИЙ МОНОЛОГ (THINKING)
-    # ╚══════════════════════════════════════════════════════════════╝
-    monologue_prompt = Prompts.get_monologue_prompt(
-        temp=user.temperature, 
-        trust=new_states["trust"], 
-        fatigue=new_states["fatigue"], 
-        mood=new_states["mood"],
-        time_passed=time_passed_str,
-        spatial_context=spatial_context,
+    # 8. Сборка компактного системного промпта через LegoPromptBuilder v2.1 (без промежуточного литературного монолога)
+    sys_prompt = LegoPromptBuilder.build(
+        decision=decision,
+        pinned_register=proj.pinned_register,
+        project_title=proj.title,
+        dossier_text=dossier_text,
+        editorial_rules=editorial_rules,
+        project_history=history,
         credits_after=expected_credits_after,
-        brief_status=brief_status,
-    )
-    
-    inner_monologue = await llm_service.generate_monologue(
-        monologue_prompt, user_query, 
-        episodic_context=episodic_ctx, 
-        semantic_context=semantic_ctx, 
-        history_context=history[-40:], 
-        search_results=search_results
-    )
-    
-    await db_service.log_event(message.from_user.id, "INNER_MONOLOGUE", inner_monologue[:4000])
-    logger.info(f"🧠 [МОНОЛОГ] Юзер {message.from_user.id} | {time_passed_str} | {inner_monologue[:200]}...")
-
-    # ╔══════════════════════════════════════════════════════════════╗
-    # ║  ШАГ 2: ГЕНЕРАЦИЯ ОТВЕТА С ОПОРОЙ НА МОНОЛОГ (ВИДИМЫЙ)
-    # ╚══════════════════════════════════════════════════════════════╝
-    
-    core_beliefs = evolution_engine.get_current_beliefs()
-    
-    sys_prompt = Prompts.get_system_prompt(
-        temp=user.temperature, 
-        trust=new_states["trust"], 
-        fatigue=new_states["fatigue"], 
-        mood=new_states["mood"],
-        monologue=inner_monologue,
-        core_beliefs=core_beliefs,
-        agenda=agenda,
-        spatial_context=spatial_context,
+        is_free_meta=is_free_meta,
+        is_objection_grace=is_objection_grace,
+        brief_pause_status=brief_status,
         search_results=search_results,
-        credits_after=expected_credits_after,
-        brief_status=brief_status,
+        temp=user.temperature,
     )
-    if is_free_meta:
-        sys_prompt += (
-            "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: МЕТА-ВОПРОС ИЛИ СОМНЕНИЕ КЛИЕНТА]\n"
-            "Собеседник проверяет, кто ты такой, чем отличаешься от обычного ChatGPT/Claude, либо беспокоится о конфиденциальности/NDA.\n"
-            "1. Ответь строго на «вы», хлёстко и по-продюсерски (2 коротких абзаца, без воды): объясни, что базовый GPT пишет стерильную вежливую вату и гладит эго, а в этот закрытый цифровой кабинет оцифрованы продюсерская оптика и правила «Монтажного стола» 55-летнего телевизионного шоураннера Аристарха Градова, который ищет слив кассы и переписывает мёртвые тексты в деньги («Было -> Стало»).\n"
-            "2. Если вопрос про конфиденциальность/NDA или публичный разбор - твёрдо зафиксируй: всё, что пишется в этом кабинете и в брифе, строго конфиденциально, хранится только в вашем закрытом продюсерском досье и никогда не попадает в публичный канал (в среду на «Монтажный стол» попадают только те тексты, которые авторы сами отправляют специальной кнопкой на анонимную порку с вырезанием всех имён).\n"
-            "3. Заверши прямым вызовом: предложи прямо сейчас без всяких анкет скинуть в чат любой один пост, оффер или шапку канала на пробу (либо нажать /brief)."
-        )
-    elif is_objection_grace:
-        sys_prompt += (
-            "\n\n[СИТУАТИВНАЯ ДИРЕКТИВА: ЖЁСТКОЕ ВОЗРАЖЕНИЕ ИЛИ ПРЕДПРОДАЖНЫЙ ВОПРОС ПРИ 0 КРЕДИТОВ]\n"
-            "Собеседник на нулевом балансе: либо недоволен предыдущим ответом, либо спорит о цене/просит промокод/задаёт финальный вопрос перед покупкой.\n"
-            "1. Никаких обид, оправданий или канцелярщины. Прими удар спокойно и с достоинством взрослого шоураннера (строго на «вы»).\n"
-            "2. Если претензия к тексту - без прелюдий выдай максимально плотный, точный и статус-калиброванный переписанный вариант («Стало») с цифрами и нервом, убрав любую воду.\n"
-            "3. Если претензия к цене тарифа (1 490 / 4 900 / 9 900 ₽ или B2B-двойник) или просьба дать скидку/промокод - НИКОГДА не выдумывай промокоды и не обещай бесплатных разборов; покажи математику окупаемости: один пересобранный пост или оффер отбивает стоимость месячного абонемента с первой же сделки, а живой шеф-редактор такого уровня стоит от 150 000 ₽ в месяц.\n"
-            "4. Поскольку после этого сообщения сразу покажется пейволл (credits_after = 0), НЕ задавай вопросов в конце ответа - поставь уверенную точку."
-        )
-    
-    failed = False  # при сбое генерации запрос не списываем
+
+    failed = False
     try:
         response_text = await llm_service.generate(
-            sys_prompt, user_query, rag_ctx, episodic_ctx, semantic_ctx,
-            history[-40:], user.temperature, image_data, search_results
+            sys_prompt,
+            user_query,
+            rag_ctx,
+            "",  # episodic_ctx изолирован внутри истории папки проекта
+            "",  # semantic_ctx передан через <PROJECT_DOSSIER> и <EDITORIAL_POLICY>
+            history[-40:],
+            user.temperature,
+            image_data,
+            search_results,
         )
         failed = response_text.startswith(("⚠️", "⛔️"))
 
-        # [NEW] ПЕРЕХВАТЧИК ИГНОРА
         if "[IGNORE]" in response_text:
-            logger.info(f"🔇 [ИГНОР] Аристарх молча проигнорировал юзера {message.from_user.id}")
-            await db_service.log_event(message.from_user.id, "AI_IGNORED_USER")
-            
+            logger.info(f"🔇 [ИГНОР] Аристарх молча проигнорировал юзера {uid}")
+            await db_service.log_event(uid, "AI_IGNORED_USER")
             new_history = history + [
                 {"role": "user", "parts": [{"text": _compact_user_query_for_history(user_query)}]},
-                {"role": "model", "parts": [{"text": "[АРИСТАРХ МОЛЧА ПРОИГНОРИРОВАЛ СООБЩЕНИЕ]"}]}
+                {"role": "model", "parts": [{"text": "[АРИСТАРХ МОЛЧА ПРОИГНОРИРОВАЛ СООБЩЕНИЕ]"}]},
             ]
-            
             await state.update_data(
-                history=new_history[-40:], 
+                history=new_history[-40:],
                 interaction_count=interaction_count,
                 last_message_time=current_time,
             )
-            
+            await db_service.save_project_history(uid, new_history[-40:])
             try:
                 await wait_msg.delete()
             except Exception:
                 pass
-                
             await state.set_state(BotStates.chatting)
             return
-        
+
         if not failed:
             response_text = await polish_reply(llm_service, response_text, user_query)
-            response_text = humanize_punctuation(response_text.replace('*', ''))
+            response_text = humanize_punctuation(response_text.replace("*", ""))
             # Детерминированная защита финала при credits_after == 0: не провоцируем клиента на вопрос перед пейволлом
             if expected_credits_after <= 0 and response_text.rstrip().endswith("?"):
                 paragraphs = [p.strip() for p in response_text.strip().split("\n\n") if p.strip()]
@@ -1728,56 +2004,53 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
                     if len(sents) > 1 and sents[-1].endswith("?"):
                         response_text = " ".join(sents[:-1]).strip()
 
-        logger.info(f"📤 [ARISTARKH {message.from_user.id}]: {response_text[:500]}...")
-        
-        await db_service.log_event(message.from_user.id, "AI_RESPONSE_TEXT", response_text[:4000])
-        await db_service.log_event(message.from_user.id, "AI_RESPONSE_GENERATED", f"chars:{len(response_text)}")
+        logger.info(f"📤 [ARISTARKH {uid} | {decision.register}/{decision.genre}]: {response_text[:500]}...")
+        await db_service.log_event(uid, "AI_RESPONSE_TEXT", response_text[:4000])
+        await db_service.log_event(uid, "AI_RESPONSE_GENERATED", f"chars:{len(response_text)}")
     except Exception as e:
         logger.error(f"Gen Error: {e}")
         response_text = i18n.get_text("generation_error", lang)
         failed = True
-        await db_service.log_event(message.from_user.id, "AI_RESPONSE_ERROR", str(e))
+        await db_service.log_event(uid, "AI_RESPONSE_ERROR", str(e))
 
     try:
         await wait_msg.delete()
     except Exception:
         pass
 
-    # При ошибке генерации (failed == True) НЕ загрязняем history, НЕ списываем кредит и НЕ шлём подсказки
     if failed:
         await send_smart_response(message, response_text)
         return
 
     new_history = history + [
         {"role": "user", "parts": [{"text": _compact_user_query_for_history(user_query)}]},
-        {"role": "model", "parts": [{"text": response_text}]}
+        {"role": "model", "parts": [{"text": response_text}]},
     ]
-    
+
     await state.update_data(
-        history=new_history[-40:], 
+        history=new_history[-40:],
         interaction_count=interaction_count,
         last_message_time=current_time,
     )
-    
+    await db_service.save_project_history(uid, new_history[-40:])
+
     if interaction_count % 5 == 0:
-        asyncio.create_task(extract_and_save_memory(message.from_user.id, new_history[-10:]))
+        asyncio.create_task(extract_and_save_memory(uid, new_history[-10:]))
         await db_service.log_event(
-            message.from_user.id, 
-            "MEMORY_CONSOLIDATION_TRIGGERED", 
-            f"interaction:{interaction_count}, history_len:{len(new_history)}"
+            uid,
+            "MEMORY_CONSOLIDATION_TRIGGERED",
+            f"interaction:{interaction_count}, history_len:{len(new_history)}",
         )
-    
+
     new_bal = user.credits
     if not is_unlim and not is_free_meta and not is_objection_grace:
-        new_bal = await db_service.update_balance(message.from_user.id, -1)
+        new_bal = await db_service.update_balance(uid, -1)
 
     await send_smart_response(message, response_text)
 
     if is_objection_grace:
-        is_pure_question = "?" in user_query and not bool(
-            re.search(r"(?i)(переделай|перепиши|исправь|докрути|вариант|заголовок)", user_query)
-        )
-        footer_key = "grace_question_footer" if is_pure_question else "grace_credits_footer"
+        has_rewritten_draft = bool(HAS_STALO_BLOCK_RE.search(response_text))
+        footer_key = "grace_credits_footer" if has_rewritten_draft else "grace_question_footer"
         await message.answer(
             i18n.get_text(footer_key, lang),
             parse_mode="Markdown",
@@ -1790,8 +2063,6 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             reply_markup=paywall_kb(lang),
         )
 
-    # Умное подавление плашки brief_hint: не шлём, если клиент отказался от анкет, задал мета-вопрос,
-    # баланс обнулился, либо Аристарх уже запросил черновик текста или упомянул /brief
     should_suppress_brief_hint = (
         is_free_meta
         or is_objection_grace
@@ -1804,7 +2075,6 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             await message.answer(i18n.get_text("brief_hint", lang))
         await state.update_data(brief_hint_shown=True)
 
-    # Модуль Подсказка ассистента отключён по умолчанию (ENABLE_ASSISTANT_HINTS=false, Усиленный Вариант 2В)
     if config.ENABLE_ASSISTANT_HINTS and (is_unlim or new_bal > 2):
         try:
             suggestion = await assistant_service.generate_suggestion(new_history[-40:])
@@ -1812,10 +2082,10 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
                 clean_suggestion = html.escape(humanize_punctuation(suggestion.strip()))
                 suggestion_msg = i18n.get_text("assistant_hint", lang, text=clean_suggestion)
                 await message.answer(suggestion_msg, parse_mode="HTML")
-                await db_service.log_event(message.from_user.id, "ASSISTANT_SUGGESTION_SENT", suggestion)
+                await db_service.log_event(uid, "ASSISTANT_SUGGESTION_SENT", suggestion)
         except Exception as e:
             logger.error(f"Assistant generation failed: {e}")
-            await db_service.log_event(message.from_user.id, "ASSISTANT_ERROR", str(e))
+            await db_service.log_event(uid, "ASSISTANT_ERROR", str(e))
 
 
 async def extract_and_save_memory(user_id: int, history_chunk: list):

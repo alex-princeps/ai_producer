@@ -1,9 +1,10 @@
 import json
 import os
+import re
 from datetime import datetime, timedelta
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Text, update
+from sqlalchemy import Column, Integer, String, Float, DateTime, BigInteger, Text, update, select, text as sql_text
 from aristarkh_core.config import logger # Добавили логгер для отслеживания ошибок JSON
 
 Base = declarative_base()
@@ -20,10 +21,12 @@ class User(Base):
     # [FIX] Поле для хранения срока действия безлимита
     unlimited_until = Column(DateTime, nullable=True)
     
-    # === [STATE TRACKER: АФФЕКТИВНАЯ ПАМЯТЬ] ===
+    # === [STATE TRACKER: АФФЕКТИВНАЯ ПАМЯТЬ И МУЛЬТИПРОЕКТНОСТЬ] ===
     trust_level = Column(Integer, default=50) # От 0 (ненависть) до 100 (бро)
     fatigue = Column(Integer, default=0) # От 0 до 100, растет в сессии
     mood = Column(String, default="neutral") # Текущее настроение: neutral, sarcastic, angry, bored
+    max_projects = Column(Integer, default=2) # Лимит папок проектов: 2 (Демо/Триал 1490), 3 (Эксперт 4900), 10 (Продюсер 9900)
+    active_project_id = Column(Integer, nullable=True)
     
 class Transaction(Base):
     __tablename__ = 'transactions'
@@ -59,6 +62,28 @@ class Brief(Base):
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ProjectFolder(Base):
+    """
+    Изолированная папка проекта (v2.1): хранит собственные 5 полей брифа,
+    пин регистра (HARD_B2B | CREATOR_MEDIA | PR_BRAND | None),
+    накопленную редполитику (editorial_rules_json) и историю чата (history_json).
+    """
+    __tablename__ = 'projects'
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(BigInteger, index=True, nullable=False)
+    slot_num = Column(Integer, default=1)
+    title = Column(String, default="Проект №1")
+    pinned_register = Column(String, nullable=True)  # None = Авто-определение, иначе HARD_B2B / CREATOR_MEDIA / PR_BRAND
+    niche = Column(Text, nullable=True)
+    audience = Column(Text, nullable=True)
+    goal = Column(Text, nullable=True)
+    channel = Column(Text, nullable=True)
+    constraints = Column(Text, nullable=True)
+    editorial_rules_json = Column(Text, default="[]")
+    history_json = Column(Text, default="[]")
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+
 class DatabaseService:
     def __init__(self, db_url):
         self.engine = create_async_engine(db_url, echo=False)
@@ -67,6 +92,14 @@ class DatabaseService:
     async def init_db(self):
         async with self.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
+            for col_sql in (
+                "ALTER TABLE users ADD COLUMN max_projects INTEGER DEFAULT 2",
+                "ALTER TABLE users ADD COLUMN active_project_id INTEGER",
+            ):
+                try:
+                    await conn.execute(sql_text(col_sql))
+                except Exception:
+                    pass
 
     async def log_event(self, user_id: int, event_type: str, event_data: str = None):
         """Логирование любого события пользователя для сквозной аналитики"""
@@ -79,16 +112,150 @@ class DatabaseService:
         async with self.async_session() as session:
             return await session.get(User, user_id)
 
-    async def get_brief(self, user_id: int) -> dict | None:
+    async def get_or_create_active_project(self, user_id: int) -> ProjectFolder:
         async with self.async_session() as session:
-            brief = await session.get(Brief, user_id)
-            return {f: getattr(brief, f) for f in BRIEF_FIELDS} if brief else None
+            user = await session.get(User, user_id)
+            if user and user.active_project_id:
+                proj = await session.get(ProjectFolder, user.active_project_id)
+                if proj and proj.user_id == user_id:
+                    return proj
+            stmt = select(ProjectFolder).where(ProjectFolder.user_id == user_id).order_by(ProjectFolder.id.asc())
+            res = await session.execute(stmt)
+            proj = res.scalars().first()
+            if not proj:
+                # Если в старой таблице briefs уже был бриф — переносим в Папку №1
+                old_brief = await session.get(Brief, user_id)
+                proj = ProjectFolder(
+                    user_id=user_id,
+                    slot_num=1,
+                    title="Проект №1",
+                    niche=old_brief.niche if old_brief else None,
+                    audience=old_brief.audience if old_brief else None,
+                    goal=old_brief.goal if old_brief else None,
+                    channel=old_brief.channel if old_brief else None,
+                    constraints=old_brief.constraints if old_brief else None,
+                )
+                session.add(proj)
+                await session.flush()
+            if user:
+                user.active_project_id = proj.id
+            await session.commit()
+            return proj
+
+    async def list_projects(self, user_id: int) -> list[ProjectFolder]:
+        await self.get_or_create_active_project(user_id)
+        async with self.async_session() as session:
+            stmt = select(ProjectFolder).where(ProjectFolder.user_id == user_id).order_by(ProjectFolder.slot_num.asc(), ProjectFolder.id.asc())
+            res = await session.execute(stmt)
+            return list(res.scalars().all())
+
+    async def switch_active_project(self, user_id: int, project_id: int) -> ProjectFolder | None:
+        async with self.async_session() as session:
+            proj = await session.get(ProjectFolder, project_id)
+            if not proj or proj.user_id != user_id:
+                return None
+            user = await session.get(User, user_id)
+            if user:
+                user.active_project_id = proj.id
+                await session.commit()
+            return proj
+
+    async def create_new_project(self, user_id: int, title: str | None = None) -> tuple[ProjectFolder | None, int]:
+        """
+        Создаёт новую изолированную папку проекта и делает её активной.
+        Если достигнут лимит тарифа (2 на демо/1490, 3 на Эксперте 4900, 10 на Продюсере 9900),
+        возвращает (None, max_allowed).
+        """
+        is_unlim = await self.has_unlimited(user_id)
+        async with self.async_session() as session:
+            user = await session.get(User, user_id)
+            max_allowed = 10 if is_unlim else (user.max_projects if user and user.max_projects else 2)
+            stmt = select(ProjectFolder).where(ProjectFolder.user_id == user_id).order_by(ProjectFolder.id.asc())
+            existing = list((await session.execute(stmt)).scalars().all())
+            if len(existing) >= max_allowed:
+                return None, max_allowed
+            next_slot = len(existing) + 1
+            proj = ProjectFolder(
+                user_id=user_id,
+                slot_num=next_slot,
+                title=(title or f"Проект №{next_slot}")[:48],
+            )
+            session.add(proj)
+            await session.flush()
+            if user:
+                user.active_project_id = proj.id
+            await session.commit()
+            return proj, max_allowed
+
+    async def set_project_pinned_register(self, user_id: int, pinned_register: str | None) -> ProjectFolder:
+        proj = await self.get_or_create_active_project(user_id)
+        async with self.async_session() as session:
+            db_proj = await session.get(ProjectFolder, proj.id)
+            db_proj.pinned_register = pinned_register
+            db_proj.updated_at = datetime.utcnow()
+            await session.commit()
+            return db_proj
+
+    async def get_editorial_rules(self, user_id: int) -> list[str]:
+        proj = await self.get_or_create_active_project(user_id)
+        try:
+            rules = json.loads(proj.editorial_rules_json or "[]")
+            return [str(r).strip() for r in rules if str(r).strip()] if isinstance(rules, list) else []
+        except Exception:
+            return []
+
+    async def save_editorial_rules(self, user_id: int, rules: list[str]):
+        proj = await self.get_or_create_active_project(user_id)
+        clean_rules = []
+        for r in rules:
+            s = str(r).strip()
+            if s and s not in clean_rules:
+                clean_rules.append(s[:240])
+        clean_rules = clean_rules[-12:]
+        async with self.async_session() as session:
+            db_proj = await session.get(ProjectFolder, proj.id)
+            db_proj.editorial_rules_json = json.dumps(clean_rules, ensure_ascii=False)
+            db_proj.updated_at = datetime.utcnow()
+            await session.commit()
+
+    async def get_project_history(self, user_id: int) -> list[dict]:
+        proj = await self.get_or_create_active_project(user_id)
+        try:
+            h = json.loads(proj.history_json or "[]")
+            return h if isinstance(h, list) else []
+        except Exception:
+            return []
+
+    async def save_project_history(self, user_id: int, history: list[dict]):
+        proj = await self.get_or_create_active_project(user_id)
+        async with self.async_session() as session:
+            db_proj = await session.get(ProjectFolder, proj.id)
+            db_proj.history_json = json.dumps((history or [])[-24:], ensure_ascii=False)
+            db_proj.updated_at = datetime.utcnow()
+            await session.commit()
+
+    async def get_brief(self, user_id: int) -> dict | None:
+        proj = await self.get_or_create_active_project(user_id)
+        data = {f: getattr(proj, f) for f in BRIEF_FIELDS if getattr(proj, f)}
+        return data if data else None
 
     async def save_brief(self, user_id: int, answers: dict):
+        proj = await self.get_or_create_active_project(user_id)
         async with self.async_session() as session:
+            db_proj = await session.get(ProjectFolder, proj.id)
+            for f in BRIEF_FIELDS:
+                val = (answers.get(f) or "").strip()[:2000] or None
+                setattr(db_proj, f, val)
+            niche_val = (answers.get("niche") or "").strip()
+            if niche_val and (not db_proj.title or db_proj.title.startswith("Проект №")):
+                short_niche = re.split(r"[.,;(\n]", niche_val)[0].strip()[:36] if "re" in globals() else niche_val[:36]
+                if short_niche:
+                    db_proj.title = f"📁 {short_niche}"
+            db_proj.updated_at = datetime.utcnow()
+            # Синхронно обновляем и старую таблицу briefs для обратной совместимости
             brief = await session.get(Brief, user_id) or Brief(user_id=user_id)
             for f in BRIEF_FIELDS:
-                setattr(brief, f, (answers.get(f) or "").strip()[:2000] or None)
+                setattr(brief, f, getattr(db_proj, f))
             brief.updated_at = datetime.utcnow()
             session.add(brief)
             await session.commit()
@@ -122,10 +289,17 @@ class DatabaseService:
             if new_credits < 0:
                 new_credits = 0
 
+            # Авто-повышение лимита папок проектов при покупке тарифов Эксперт (60 разб. -> 3 папки) и Продюсер (200 разб. -> 10 папок)
+            new_max_projects = user.max_projects or 2
+            if delta >= 150:
+                new_max_projects = max(new_max_projects, 10)
+            elif delta >= 50:
+                new_max_projects = max(new_max_projects, 3)
+
             stmt = (
                 update(User)
                 .where(User.id == user_id)
-                .values(credits=new_credits, expires_at=new_expires_at)
+                .values(credits=new_credits, expires_at=new_expires_at, max_projects=new_max_projects)
                 .returning(User.credits)
             )
             result = await session.execute(stmt)

@@ -1,8 +1,15 @@
 import re
+import base64
 import aiohttp
 import json
 from tenacity import retry, stop_after_attempt, wait_exponential
 from aristarkh_core.config import config, logger
+from aristarkh_core.prompt_builder import (
+    RouteDecision,
+    GEMINI_ROUTE_SCHEMA,
+    FLASH_ROUTER_SYSTEM_PROMPT,
+    infer_register_from_text,
+)
 
 class LLMService:
     def __init__(self, api_key: str):
@@ -107,6 +114,120 @@ class LLMService:
                 await session.close()
         
         return {"needs_search": False, "query": ""}
+
+    # === [NEW v2.1] ШАГ 1 LEGO: БЫСТРЫЙ РОУТЕР КУБИКОВ ЛЕГО НА GEMINI-2.5-FLASH (T=0.0) ===
+    async def route_request_lego(
+        self,
+        user_query: str,
+        history_context: list | None = None,
+        dossier_text: str = "",
+        pinned_register: str | None = None,
+    ) -> RouteDecision:
+        """
+        За один быстрый вызов gemini-2.5-flash (~0.6 сек, T=0.0) классифицирует запрос по 8 осям RouteDecision,
+        объединяя выбор кубиков Лего и проверку необходимости поиска (needs_search).
+        """
+        context_lines = []
+        if dossier_text:
+            context_lines.append(f"[ДОСЬЕ АКТИВНОЙ ПАПКИ ПРОЕКТА]:\n{dossier_text[:1000]}")
+        if history_context:
+            context_lines.append("[ПОСЛЕДНИЕ РЕПЛИКИ ДИАЛОГА]:")
+            for msg in history_context[-4:]:
+                role = "АРИСТАРХ" if msg.get("role") == "model" else "КЛИЕНТ"
+                txt = " ".join(p.get("text", "") for p in msg.get("parts", []) if p.get("text"))
+                context_lines.append(f"[{role}]: {txt[:600]}")
+        context_lines.append(f"[ТЕКУЩЕЕ СООБЩЕНИЕ КЛИЕНТА]:\n{user_query[:3500]}")
+        router_input = "\n\n".join(context_lines)
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/{config.ASSISTANT_MODEL_NAME}:generateContent?key={self.api_key}"
+        payload = {
+            "systemInstruction": {"parts": [{"text": FLASH_ROUTER_SYSTEM_PROMPT}]},
+            "contents": [{"role": "user", "parts": [{"text": router_input}]}],
+            "safetySettings": self.safety_settings,
+            "generationConfig": {
+                "temperature": 0.0,
+                "maxOutputTokens": 450,
+                "responseMimeType": "application/json",
+                "responseSchema": GEMINI_ROUTE_SCHEMA,
+            },
+        }
+
+        session = self.http_session or aiohttp.ClientSession()
+        try:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        text_resp = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
+                        parsed = self._parse_json_safe(text_resp)
+                        if parsed:
+                            decision = RouteDecision.model_validate(parsed)
+                            if pinned_register in ("HARD_B2B", "CREATOR_MEDIA", "PR_BRAND"):
+                                decision.register = pinned_register
+                            logger.info(
+                                f"🧱 [LegoRouter] intent={decision.intent_type}, reg={decision.register}, "
+                                f"genre={decision.genre}, facts={decision.fact_status}, rev={decision.is_revision_of_prev}, "
+                                f"bio={decision.has_bio_request}, lim={decision.explicit_char_limit}"
+                            )
+                            return decision
+                else:
+                    err = await resp.text()
+                    logger.warning(f"LegoRouter HTTP {resp.status}: {err[:200]}")
+        except Exception as e:
+            logger.warning(f"LegoRouter fallback triggered: {e}")
+        finally:
+            if not self.http_session:
+                await session.close()
+
+        # Детерминированный фоллбэк (0 токенов), если API Flash мигнул:
+        fallback_reg = pinned_register if pinned_register in ("HARD_B2B", "CREATOR_MEDIA", "PR_BRAND") else infer_register_from_text(f"{dossier_text}\n{user_query}")
+        return RouteDecision(register=fallback_reg)
+
+    # === [NEW v2.1] РАСШИФРОВКА ГОЛОСОВЫХ СООБЩЕНИЙ (.ogg/.mp3) ЧЕРЕЗ GEMINI-2.5-FLASH ===
+    async def transcribe_voice_ogg(self, audio_bytes: bytes, mime_type: str = "audio/ogg") -> str:
+        """
+        Транскрибирует голосовое сообщение (до 5 минут) через gemini-2.5-flash.
+        Если в аудио тишина или неразборчивый шум — возвращает пустую строку "".
+        """
+        if not audio_bytes or len(audio_bytes) < 400:
+            return ""
+        b64_audio = base64.b64encode(audio_bytes).decode("utf-8")
+        prompt = (
+            "Расшифруй это голосовое сообщение дословно на русском языке, сохраняя все профессиональные термины, "
+            "цифры, бренды и живую интонацию говорящего. "
+            "Если на записи полная тишина, только шум или нет ни одного разборчивого слова — верни строго пустую строку [SILENCE]."
+        )
+        url = f"https://generativelanguage.googleapis.com/v1beta/{config.ASSISTANT_MODEL_NAME}:generateContent?key={self.api_key}"
+        payload = {
+            "contents": [{
+                "role": "user",
+                "parts": [
+                    {"text": prompt},
+                    {"inlineData": {"mimeType": mime_type, "data": b64_audio}},
+                ],
+            }],
+            "safetySettings": self.safety_settings,
+            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 2000},
+        }
+        session = self.http_session or aiohttp.ClientSession()
+        try:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        txt = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
+                        if "[SILENCE]" in txt.upper() or len(re.findall(r"[а-яА-ЯёЁa-zA-Z]{2,}", txt)) < 2:
+                            return ""
+                        logger.info(f"🎙 [Voice STT] Расшифровано ({len(txt)} симв.): {txt[:120]}...")
+                        return txt
+        except Exception as e:
+            logger.error(f"Voice transcription error: {e}")
+        finally:
+            if not self.http_session:
+                await session.close()
+        return ""
 
     # === [NEW] ШАГ 0.5: EXECUTE SEARCH — ЧИСТЫЙ GROUNDING ===
     async def execute_grounding_search(self, search_query: str):

@@ -96,7 +96,18 @@
   "grace_question_footer": "🎯 **Answered your question outside the demo limit.**\n\nYour free demo limit is now complete. Choose a working plan below to continue:",
   "brief_paused_for_chat": "⏸ *Brief paused (your previous answers are saved). Answering your question directly:*",
   "brief_resumed_intro": "📋 Resuming brief where we left off ({filled}/5 answers saved):",
-  "brief_already_complete": "📋 **Your project brief is already complete (5/5):**\n\n{brief_text}\n\nSend texts in chat or restart the brief from scratch:",
+  "brief_already_complete": "📋 **Active project folder: {project_title}** ({projects_count}/{max_projects})\n🎯 **Optics:** {register_label}\n\n{brief_text}\n\n{rules_preview}",
   "btn_brief_restart": "🔄 Restart from 1/5",
-  "btn_brief_back_chat": "✖️ Back to chat"
+  "btn_brief_back_chat": "✖️ Back to chat",
+  "btn_project_new": "➕ New project",
+  "btn_editorial_policy": "✏️ Editorial policy",
+  "wait_transcribing_voice": "🎙 Listening to your voice message...",
+  "voice_empty_retry": "🎙 Only silence or noise detected in the voice note (no credit charged). Please record again or type your message.",
+  "project_limit_reached": "🔒 **Project folder limit reached ({max_projects}/{max_projects}).** Upgrade to Expert (up to 3 projects) or Producer (up to 10 projects):",
+  "project_switched": "📂 Switched active folder to **{project_title}**.",
+  "project_created": "📁 Created new project folder **{project_title}** ({slot_num}/{max_projects}).",
+  "editorial_policy_card": "✏️ **Editorial policy for «{project_title}»:**\n\n{rules_list}",
+  "editorial_rule_added": "✅ Rule added to **{project_title}**: «{rule}»",
+  "editorial_rules_cleared": "🗑 Editorial policy cleared for **{project_title}**.",
+  "register_pin_updated": "🎯 Folder optics for **{project_title}** set to: **{register_label}**."
 }
