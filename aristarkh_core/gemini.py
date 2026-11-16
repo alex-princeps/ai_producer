@@ -148,9 +148,10 @@ class LLMService:
             "safetySettings": self.safety_settings,
             "generationConfig": {
                 "temperature": 0.0,
-                "maxOutputTokens": 450,
+                "maxOutputTokens": 1024,
                 "responseMimeType": "application/json",
                 "responseSchema": GEMINI_ROUTE_SCHEMA,
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
 
@@ -161,7 +162,14 @@ class LLMService:
                     data = await resp.json()
                     candidates = data.get("candidates", [])
                     if candidates:
-                        text_resp = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        text_resp = ""
+                        for p in reversed(parts):
+                            if p.get("text") and not p.get("thought"):
+                                text_resp = p["text"]
+                                break
+                        if not text_resp and parts:
+                            text_resp = parts[-1].get("text", "{}")
                         parsed = self._parse_json_safe(text_resp)
                         if parsed:
                             decision = RouteDecision.model_validate(parsed)
@@ -173,6 +181,8 @@ class LLMService:
                                 f"bio={decision.has_bio_request}, lim={decision.explicit_char_limit}"
                             )
                             return decision
+                        else:
+                            logger.warning(f"LegoRouter unparseable JSON: {text_resp[:200]} | raw={str(candidates[0])[:300]}")
                 else:
                     err = await resp.text()
                     logger.warning(f"LegoRouter HTTP {resp.status}: {err[:200]}")
