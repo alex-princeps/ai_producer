@@ -122,11 +122,13 @@ class LLMService:
         history_context: list | None = None,
         dossier_text: str = "",
         pinned_register: str | None = None,
+        history_tail: list | None = None,
     ) -> RouteDecision:
         """
         За один быстрый вызов gemini-2.5-flash (~0.6 сек, T=0.0) классифицирует запрос по 8 осям RouteDecision,
         объединяя выбор кубиков Лего и проверку необходимости поиска (needs_search).
         """
+        history_context = history_context if history_context is not None else history_tail
         context_lines = []
         if dossier_text:
             context_lines.append(f"[ДОСЬЕ АКТИВНОЙ ПАПКИ ПРОЕКТА]:\n{dossier_text[:1000]}")
