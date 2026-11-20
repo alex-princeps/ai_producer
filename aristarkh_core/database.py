@@ -81,6 +81,8 @@ class ProjectFolder(Base):
     constraints = Column(Text, nullable=True)
     editorial_rules_json = Column(Text, default="[]")
     history_json = Column(Text, default="[]")
+    arc_ledger_json = Column(Text, default="[]")
+    voice_samples_json = Column(Text, default="[]")
     updated_at = Column(DateTime, default=datetime.utcnow)
 
     @property
@@ -99,6 +101,8 @@ class DatabaseService:
             for col_sql in (
                 "ALTER TABLE users ADD COLUMN max_projects INTEGER DEFAULT 2",
                 "ALTER TABLE users ADD COLUMN active_project_id INTEGER",
+                "ALTER TABLE projects ADD COLUMN arc_ledger_json TEXT DEFAULT '[]'",
+                "ALTER TABLE projects ADD COLUMN voice_samples_json TEXT DEFAULT '[]'",
             ):
                 try:
                     await conn.execute(sql_text(col_sql))
@@ -238,6 +242,79 @@ class DatabaseService:
             db_proj.updated_at = datetime.utcnow()
             await session.commit()
 
+    async def get_arc_ledger(self, user_id: int) -> list[dict]:
+        proj = await self.get_or_create_active_project(user_id)
+        try:
+            items = json.loads(proj.arc_ledger_json or "[]")
+            return items if isinstance(items, list) else []
+        except Exception:
+            return []
+
+    async def append_arc_ledger_entry(self, user_id: int, entry: dict):
+        proj = await self.get_or_create_active_project(user_id)
+        async with self.async_session() as session:
+            db_proj = await session.get(ProjectFolder, proj.id)
+            try:
+                items = json.loads(db_proj.arc_ledger_json or "[]")
+                if not isinstance(items, list):
+                    items = []
+            except Exception:
+                items = []
+            next_n = (items[-1].get("n", len(items)) + 1) if items else 1
+            entry_clean = {
+                "n": entry.get("n") or next_n,
+                "genre": str(entry.get("genre", "POST"))[:32],
+                "lead_hook": str(entry.get("lead_hook", "")).strip()[:120],
+                "metaphors": list(entry.get("metaphors") or [])[:5],
+            }
+            items.append(entry_clean)
+            db_proj.arc_ledger_json = json.dumps(items[-30:], ensure_ascii=False)
+            db_proj.updated_at = datetime.utcnow()
+            await session.commit()
+
+    async def get_voice_samples(self, user_id: int) -> list[str]:
+        proj = await self.get_or_create_active_project(user_id)
+        try:
+            samples = json.loads(proj.voice_samples_json or "[]")
+            return [str(s).strip() for s in samples if str(s).strip()] if isinstance(samples, list) else []
+        except Exception:
+            return []
+
+    async def save_voice_samples(self, user_id: int, samples: list[str]):
+        proj = await self.get_or_create_active_project(user_id)
+        clean = [str(s).strip()[:600] for s in (samples or []) if str(s).strip()][:2]
+        async with self.async_session() as session:
+            db_proj = await session.get(ProjectFolder, proj.id)
+            db_proj.voice_samples_json = json.dumps(clean, ensure_ascii=False)
+            db_proj.updated_at = datetime.utcnow()
+            await session.commit()
+
+    async def get_all_user_model_texts(self, user_id: int) -> str:
+        """Собирает все прошлые ответы модели и arc_ledger по ВСЕМ папкам user_id (для сквозного анти-повтора референсов)."""
+        async with self.async_session() as session:
+            stmt = select(ProjectFolder).where(ProjectFolder.user_id == user_id)
+            projects = list((await session.execute(stmt)).scalars().all())
+        chunks = []
+        for p in projects:
+            try:
+                hist = json.loads(p.history_json or "[]")
+                for m in hist:
+                    if m.get("role") == "model":
+                        txt = " ".join(pt.get("text", "") for pt in m.get("parts", []) if pt.get("text"))
+                        if txt:
+                            chunks.append(txt)
+            except Exception:
+                pass
+            try:
+                ledger = json.loads(p.arc_ledger_json or "[]")
+                for item in ledger:
+                    chunks.append(" ".join(item.get("metaphors") or []))
+                    if item.get("lead_hook"):
+                        chunks.append(item["lead_hook"])
+            except Exception:
+                pass
+        return "\n".join(chunks)
+
     async def get_brief(self, user_id: int) -> dict | None:
         proj = await self.get_or_create_active_project(user_id)
         data = {f: getattr(proj, f) for f in BRIEF_FIELDS if getattr(proj, f)}
@@ -248,13 +325,25 @@ class DatabaseService:
         async with self.async_session() as session:
             db_proj = await session.get(ProjectFolder, proj.id)
             for f in BRIEF_FIELDS:
-                val = (answers.get(f) or "").strip()[:2000] or None
+                max_len = 5500 if f == "channel" else 2000
+                val = (answers.get(f) or "").strip()[:max_len] or None
                 setattr(db_proj, f, val)
             niche_val = (answers.get("niche") or "").strip()
-            if niche_val and (not db_proj.title or db_proj.title.startswith("Проект №")):
-                short_niche = re.split(r"[.,;(\n]", niche_val)[0].strip()[:36] if "re" in globals() else niche_val[:36]
-                if short_niche:
-                    db_proj.title = f"📁 {short_niche}"
+            if niche_val and (not db_proj.title or db_proj.title.startswith(("Проект №", "📁 "))):
+                raw_short = re.split(r"[.,;(\n—-]", niche_val)[0].strip()
+                raw_short = re.sub(r"^[^\wА-Яа-яЁё]+", "", raw_short).strip()
+                words = raw_short.split()
+                clean_title = ""
+                for w in words:
+                    cand = f"{clean_title} {w}".strip() if clean_title else w
+                    if len(cand) <= 18:
+                        clean_title = cand
+                    else:
+                        break
+                if not clean_title and raw_short:
+                    clean_title = raw_short[:16].rstrip()
+                if clean_title:
+                    db_proj.title = clean_title
             db_proj.updated_at = datetime.utcnow()
             # Синхронно обновляем и старую таблицу briefs для обратной совместимости
             brief = await session.get(Brief, user_id) or Brief(user_id=user_id)

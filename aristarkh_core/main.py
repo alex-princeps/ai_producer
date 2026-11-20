@@ -33,7 +33,15 @@ import logging
 logger = logging.getLogger(__name__)
 import i18n
 from aristarkh_core.prompts import Prompts
-from aristarkh_core.prompt_builder import LegoPromptBuilder, infer_register_from_text
+from aristarkh_core.prompt_builder import (
+    LegoPromptBuilder,
+    extract_used_metaphors,
+    infer_register_from_text,
+)
+from aristarkh_core.channel_scanner import (
+    extract_tg_username,
+    fetch_public_tg_channel_snapshot,
+)
 from aristarkh_core.database import BRIEF_FIELDS, DatabaseService
 from aristarkh_core.reply_guard import polish_reply
 from aristarkh_core.rag_chroma import RAGService
@@ -324,8 +332,9 @@ def stars_kb(lang: str) -> InlineKeyboardMarkup:
     ])
 
 
+LEGACY_BRIEF_BTNS = {"📋 Бриф", "📂 Проект / Бриф"}
 MENU_BUTTONS = (i18n.variants("btn_settings") | i18n.variants("btn_balance") | i18n.variants("btn_rest")
-                | i18n.variants("btn_brief"))
+                | i18n.variants("btn_brief") | LEGACY_BRIEF_BTNS)
 DONE_WORDS = {"все", "всё", "done", "готово"} | {v.lower() for v in i18n.variants("btn_done")}
 
 # --- UTILS: TEXT EXTRACTOR ---
@@ -648,9 +657,57 @@ BRIEF_LABELS = {
 }
 
 
+def _clean_user_display_name(tg_user) -> str:
+    if not tg_user:
+        return ""
+    first = (getattr(tg_user, "first_name", None) or "").strip()
+    full = (getattr(tg_user, "full_name", None) or "").strip()
+    cand = full or first
+    if not cand or cand.lower() in {"user", "unknown", "none", "без имени", "client"}:
+        return ""
+    return cand[:60]
+
+
+def _clean_folder_title(title: str | None, max_len: int = 18) -> str:
+    raw = re.sub(r"^[📁📂\s]+", "", (title or "Проект").strip())
+    if len(raw) <= max_len:
+        return raw or "Проект"
+    words = raw.split()
+    acc = ""
+    for w in words:
+        cand = f"{acc} {w}".strip() if acc else w
+        if len(cand) <= max_len:
+            acc = cand
+        else:
+            break
+    return acc or raw[:max_len].rstrip()
+
+
 def format_brief(brief: dict | None) -> str:
+    """Полное досье проекта для LLM (<PROJECT_DOSSIER>), включая скан открытого ТГ-канала."""
     lines = [f"- {BRIEF_LABELS[f]}: {brief[f]}" for f in BRIEF_FIELDS if brief and brief.get(f)]
-    return "[БРИФ ПРОЕКТА — опирайся на него в первую очередь]\n" + "\n".join(lines) if lines else ""
+    return "\n".join(lines) if lines else ""
+
+
+def format_brief_for_ui(brief: dict | None) -> str:
+    """Компактное досье проекта для карточки папки в мобильном Telegram (без простыни скана постов)."""
+    if not brief:
+        return "_Досье папки пока пустое — заполните 5 вопросов брифа или сразу пришлите задачу в чат._"
+    lines = []
+    for f in BRIEF_FIELDS:
+        val = (brief.get(f) or "").strip()
+        if not val:
+            continue
+        if f == "channel" and "[АВТОСКАН ОТКРЫТОГО TELEGRAM-КАНАЛА]" in val:
+            head_part = val.split("[АВТОСКАН ОТКРЫТОГО TELEGRAM-КАНАЛА]", 1)[0].strip()
+            scan_part = val.split("[АВТОСКАН ОТКРЫТОГО TELEGRAM-КАНАЛА]", 1)[1].strip().splitlines()
+            first_scan_line = scan_part[0].strip() if scan_part else ""
+            compact_val = f"{head_part} ({first_scan_line})" if head_part and first_scan_line else (first_scan_line or head_part)
+            val = compact_val[:220]
+        elif len(val) > 200:
+            val = val[:197].rstrip() + "…"
+        lines.append(f"• **{BRIEF_LABELS[f]}:** {val}")
+    return "\n".join(lines) if lines else "_Досье папки пока пустое._"
 
 
 def _register_label(lang: str, pinned_register: str | None) -> str:
@@ -663,20 +720,32 @@ def _register_label(lang: str, pinned_register: str | None) -> str:
     return mapping.get(pinned_register, i18n.get_text("reg_auto", lang))
 
 
-def build_brief_and_project_kb(
+def brief_question_inline_kb(lang: str, show_restart: bool = False) -> InlineKeyboardMarkup:
+    """Лёгкая 1-строчная клавиатура под пошаговыми вопросами брифа 1/5..5/5 (без «простыни» кнопок)."""
+    row: list[InlineKeyboardButton] = []
+    if show_restart:
+        row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_restart", lang), callback_data="brief_restart"))
+    row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat"))
+    return InlineKeyboardMarkup(inline_keyboard=[row])
+
+
+def build_project_hub_kb(
     lang: str,
     active_proj=None,
     projects: list | None = None,
-    show_restart: bool = False,
+    brief: dict | None = None,
+    rules_count: int = 0,
 ) -> InlineKeyboardMarkup:
+    """Компактный мобильный хаб «📂 Проект / Бриф» (Вариант 1В): папки, редполитика, оптика и действие брифа."""
     rows: list[list[InlineKeyboardButton]] = []
     if projects:
         folder_row: list[InlineKeyboardButton] = []
         for p in projects:
             icon = "📂" if (active_proj and p.id == active_proj.id) else "📁"
+            clean_t = _clean_folder_title(p.title, max_len=16)
             folder_row.append(
                 InlineKeyboardButton(
-                    text=f"{icon} {p.title[:22]}",
+                    text=f"{icon} {clean_t}",
                     callback_data=f"proj_switch:{p.id}",
                 )
             )
@@ -686,49 +755,84 @@ def build_brief_and_project_kb(
         if folder_row:
             rows.append(folder_row)
 
+    rules_label = (
+        f"{i18n.get_text('btn_editorial_policy', lang)} ({rules_count})"
+        if rules_count > 0
+        else i18n.get_text("btn_editorial_policy", lang)
+    )
     rows.append([
         InlineKeyboardButton(text=i18n.get_text("btn_new_project", lang), callback_data="proj_new"),
-        InlineKeyboardButton(text=i18n.get_text("btn_editorial_policy", lang), callback_data="proj_rules"),
+        InlineKeyboardButton(text=rules_label, callback_data="proj_rules"),
     ])
 
     pinned = active_proj.pinned_register if active_proj else None
     rows.append([
         InlineKeyboardButton(
-            text=f"{'✅ ' if not pinned else ''}🎯 Авто",
-            callback_data="proj_reg:AUTO",
-        ),
-        InlineKeyboardButton(
-            text=f"{'✅ ' if pinned == 'HARD_B2B' else ''}⚙️ B2B",
-            callback_data="proj_reg:HARD_B2B",
-        ),
-    ])
-    rows.append([
-        InlineKeyboardButton(
-            text=f"{'✅ ' if pinned == 'CREATOR_MEDIA' else ''}🎬 Медиа/Блог",
-            callback_data="proj_reg:CREATOR_MEDIA",
-        ),
-        InlineKeyboardButton(
-            text=f"{'✅ ' if pinned == 'PR_BRAND' else ''}🏛 Оптика: PR и Бренд",
-            callback_data="proj_reg:PR_BRAND",
-        ),
+            text=f"🎯 Оптика: {_register_label(lang, pinned)}",
+            callback_data="proj_reg_menu",
+        )
     ])
 
-    nav_row = []
-    if show_restart:
-        nav_row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_restart", lang), callback_data="brief_restart"))
-    nav_row.append(InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat"))
-    rows.append(nav_row)
+    existing = brief or {}
+    missing_indices = [idx for idx, f in enumerate(BRIEF_FIELDS) if not existing.get(f)]
+    if len(missing_indices) == len(BRIEF_FIELDS):
+        brief_btn = InlineKeyboardButton(text=i18n.get_text("btn_brief_fill", lang), callback_data="brief_quiz_start")
+    elif 0 < len(missing_indices) < len(BRIEF_FIELDS):
+        next_step = missing_indices[0] + 1
+        brief_btn = InlineKeyboardButton(
+            text=i18n.get_text("btn_brief_resume", lang, next_step=next_step),
+            callback_data="brief_quiz_start",
+        )
+    else:
+        brief_btn = InlineKeyboardButton(text=i18n.get_text("btn_brief_update", lang), callback_data="brief_restart")
+    rows.append([brief_btn])
+
+    rows.append([
+        InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat"),
+    ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def build_register_picker_kb(lang: str, pinned_register: str | None = None) -> InlineKeyboardMarkup:
+    """Компактное подменю выбора оптики папки (вынесено из основного хаба ради мобильной эргономики)."""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(
+                text=f"{'✅ ' if not pinned_register else ''}🎯 Авто",
+                callback_data="proj_reg:AUTO",
+            ),
+            InlineKeyboardButton(
+                text=f"{'✅ ' if pinned_register == 'HARD_B2B' else ''}⚙️ Hard B2B",
+                callback_data="proj_reg:HARD_B2B",
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                text=f"{'✅ ' if pinned_register == 'CREATOR_MEDIA' else ''}🎬 Медиа и Блог",
+                callback_data="proj_reg:CREATOR_MEDIA",
+            ),
+            InlineKeyboardButton(
+                text=f"{'✅ ' if pinned_register == 'PR_BRAND' else ''}🏛 PR и Бренд",
+                callback_data="proj_reg:PR_BRAND",
+            ),
+        ],
+        [
+            InlineKeyboardButton(text=i18n.get_text("btn_back_to_folder", lang), callback_data="proj_hub"),
+        ],
+    ])
 
 
 async def generate_cold_shower_diagnosis(
     answers: dict,
     history: list | None = None,
     pinned_register: str | None = None,
+    all_user_model_texts: str = "",
+    user_display_name: str = "",
+    rotation_seed: int = 0,
 ) -> str:
     """
-    Генерирует снайперский диагноз «Точка слива кассы» (2–3 абзаца строго на «вы»)
-    через LegoPromptBuilder.build_cold_shower_prompt (без штампа про голосовые из машины и с защитой от повторов метафор).
+    Генерирует первичный «Продюсерский рентген проекта» (2–3 абзаца строго на «вы»)
+    через LegoPromptBuilder.build_cold_shower_prompt с ротацией палитры в Python.
     """
     brief_dump = "\n".join(f"- {BRIEF_LABELS[f]}: {answers.get(f) or 'не указано'}" for f in BRIEF_FIELDS)
     prior_chat = ""
@@ -743,49 +847,71 @@ async def generate_cold_shower_diagnosis(
             prior_chat = "\n\nКОНТЕКСТ ПРЕДЫДУЩЕГО РАЗГОВОРА В ЧАТЕ (НЕ ПРОТИВОРЕЧЬ ТОМУ, О ЧЁМ УЖЕ ДОГОВОРИЛИСЬ):\n" + "\n".join(recent_lines)
 
     register = pinned_register or infer_register_from_text(brief_dump)
-    system_prompt = LegoPromptBuilder.build_cold_shower_prompt(register=register, project_history=history)
-    user_prompt = f"ВВОДНЫЕ БРИФА КЛИЕНТА:\n{brief_dump}{prior_chat}\n\nВыдай диагноз «Точка слива кассы»."
+    system_prompt = LegoPromptBuilder.build_cold_shower_prompt(
+        register=register,
+        project_history=history,
+        all_user_model_texts=all_user_model_texts,
+        user_display_name=user_display_name,
+        rotation_seed=rotation_seed,
+    )
+    user_prompt = f"ВВОДНЫЕ БРИФА КЛИЕНТА:\n{brief_dump}{prior_chat}\n\nВыдай первичный «Продюсерский рентген проекта»."
     diag = await llm_service.generate_standalone(system_prompt, user_prompt, temp=0.75)
     diag = await polish_reply(llm_service, diag, user_prompt)
     return humanize_punctuation(diag.replace("*", "").strip())
 
 
-async def start_brief(message: types.Message, state: FSMContext, lang: str, user_id: int | None = None, force_restart: bool = False):
+async def open_project_hub(message: types.Message, state: FSMContext, lang: str, user_id: int | None = None):
+    """
+    Всегда открывает компактный Хаб «📂 Проект / Бриф» (Вариант 1В) —
+    даже при 0 кредитов и даже если бриф в текущей папке ещё не заполнен (0/5).
+    """
     uid = user_id or message.chat.id
     user = await db_service.get_user(uid)
     if not user:
         user = await db_service.create_user(uid, getattr(message.from_user, "username", None), getattr(message.from_user, "full_name", None))
     active_proj = await db_service.get_or_create_active_project(uid)
     projects = await db_service.list_projects(uid)
+    existing = await db_service.get_brief(uid) or {}
+    rules = await db_service.get_editorial_rules(uid)
+    max_proj = getattr(user, "max_projects", 2) or 2
+
+    await db_service.log_event(uid, "PROJECT_HUB_OPENED", f"proj:{active_proj.id}")
+    await state.set_state(BotStates.chatting)
+    card_text = i18n.get_text(
+        "project_folder_card",
+        lang,
+        slot_index=active_proj.slot_index,
+        max_projects=max_proj,
+        title=_clean_folder_title(active_proj.title, max_len=28),
+        register_label=_register_label(lang, active_proj.pinned_register),
+        rules_count=len(rules),
+        brief_text=format_brief_for_ui(existing),
+    )
+    await message.answer(
+        card_text,
+        parse_mode="Markdown",
+        reply_markup=build_project_hub_kb(lang, active_proj, projects, brief=existing, rules_count=len(rules)),
+    )
+
+
+async def start_brief_quiz(
+    message: types.Message,
+    state: FSMContext,
+    lang: str,
+    user_id: int | None = None,
+    force_restart: bool = False,
+):
+    """Запускает или продолжает пошаговый бриф (1/5..5/5) с лёгкой 1-строчной клавиатурой под вопросом."""
+    uid = user_id or message.chat.id
+    user = await db_service.get_user(uid)
+    if not user:
+        user = await db_service.create_user(uid, getattr(message.from_user, "username", None), getattr(message.from_user, "full_name", None))
+    active_proj = await db_service.get_or_create_active_project(uid)
     await db_service.log_event(uid, "BRIEF_STARTED", f"proj:{active_proj.id}")
-    data = await state.get_data()
     existing = await db_service.get_brief(uid) or {}
     missing_indices = [idx for idx, f in enumerate(BRIEF_FIELDS) if not existing.get(f)]
 
-    # Если бриф текущей папки уже заполнен на 5/5 и пользователь нажал «📋 Бриф» (без force_restart) — показываем карточку папки и досье
-    if not force_restart and existing and len(missing_indices) == 0:
-        await state.set_state(BotStates.chatting)
-        rules = await db_service.get_editorial_rules(uid)
-        max_proj = getattr(user, "max_projects", 2) or 2
-        card_text = i18n.get_text(
-            "project_folder_card",
-            lang,
-            slot_index=active_proj.slot_index,
-            max_projects=max_proj,
-            title=active_proj.title,
-            register_label=_register_label(lang, active_proj.pinned_register),
-            rules_count=len(rules),
-            brief_text=format_brief(existing),
-        )
-        await message.answer(
-            card_text,
-            parse_mode="Markdown",
-            reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=True),
-        )
-        return
-
-    # Если бриф был поставлен на паузу на полпути (заполнено 1..4 из 5) и это не принудительный сброс —
-    # мгновенно подаём вопрос (k+1)/5 с инлайн-кнопками управления папкой и брифом
+    # Продолжение с места остановки (1..4 из 5)
     if not force_restart and existing and 0 < len(missing_indices) < len(BRIEF_FIELDS):
         next_idx = missing_indices[0]
         filled_count = len(BRIEF_FIELDS) - len(missing_indices)
@@ -794,17 +920,14 @@ async def start_brief(message: types.Message, state: FSMContext, lang: str, user
         await message.answer(i18n.get_text("brief_resumed_intro", lang, filled=filled_count), reply_markup=cancel_kb(lang))
         await message.answer(
             i18n.get_text(f"brief_q_{BRIEF_FIELDS[next_idx]}", lang),
-            reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=True),
+            reply_markup=brief_question_inline_kb(lang, show_restart=True),
         )
         return
 
-    # Проверка баланса ДО старта повторного брифа с 1/5 (если бесплатный диагноз уже был использован):
-    if data.get("cold_shower_free_used"):
-        is_unlim = await db_service.has_unlimited(uid)
-        if user and not is_unlim and user.credits < 1:
-            await state.set_state(BotStates.chatting)
-            await message.answer(i18n.get_text("no_credits", lang), parse_mode="Markdown", reply_markup=paywall_kb(lang))
-            return
+    # Если бриф уже 5/5 и не было force_restart — показываем хаб проекта
+    if not force_restart and existing and len(missing_indices) == 0:
+        await open_project_hub(message, state, lang, user_id=uid)
+        return
 
     if force_restart:
         await db_service.save_brief(uid, {})
@@ -813,30 +936,36 @@ async def start_brief(message: types.Message, state: FSMContext, lang: str, user
     await message.answer(i18n.get_text("brief_intro", lang), reply_markup=cancel_kb(lang))
     await message.answer(
         i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang),
-        reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=False),
+        reply_markup=brief_question_inline_kb(lang, show_restart=False),
     )
 
 
 @dp.message(Command("brief"))
 async def cmd_brief(message: types.Message, state: FSMContext):
-    await start_brief(message, state, i18n.user_lang(message.from_user), user_id=message.from_user.id)
+    await open_project_hub(message, state, i18n.user_lang(message.from_user), user_id=message.from_user.id)
 
 
-@dp.message(F.text.in_(i18n.variants("btn_brief")))
+@dp.message(F.text.in_(i18n.variants("btn_brief") | LEGACY_BRIEF_BTNS))
 async def brief_button(message: types.Message, state: FSMContext):
-    await start_brief(message, state, i18n.user_lang(message.from_user), user_id=message.from_user.id)
+    await open_project_hub(message, state, i18n.user_lang(message.from_user), user_id=message.from_user.id)
 
 
-@dp.callback_query(F.data == "brief_start")
+@dp.callback_query(F.data == "proj_hub")
+async def proj_hub_callback(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await open_project_hub(callback.message, state, i18n.user_lang(callback.from_user), user_id=callback.from_user.id)
+
+
+@dp.callback_query(F.data.in_({"brief_start", "brief_quiz_start"}))
 async def brief_start_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await start_brief(callback.message, state, i18n.user_lang(callback.from_user), user_id=callback.from_user.id)
+    await start_brief_quiz(callback.message, state, i18n.user_lang(callback.from_user), user_id=callback.from_user.id)
 
 
 @dp.callback_query(F.data == "brief_restart")
 async def brief_restart_callback(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
-    await start_brief(
+    await start_brief_quiz(
         callback.message,
         state,
         i18n.user_lang(callback.from_user),
@@ -854,6 +983,19 @@ async def brief_back_chat_callback(callback: types.CallbackQuery, state: FSMCont
         await db_service.save_brief(callback.from_user.id, answers)
     await state.set_state(BotStates.chatting)
     await callback.message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
+
+
+@dp.callback_query(F.data == "proj_reg_menu")
+async def proj_reg_menu_callback(callback: types.CallbackQuery):
+    await callback.answer()
+    uid = callback.from_user.id
+    lang = i18n.user_lang(callback.from_user)
+    proj = await db_service.get_or_create_active_project(uid)
+    await callback.message.answer(
+        i18n.get_text("register_menu_title", lang, title=_clean_folder_title(proj.title, max_len=28)),
+        parse_mode="Markdown",
+        reply_markup=build_register_picker_kb(lang, proj.pinned_register),
+    )
 
 
 @dp.callback_query(F.data.startswith("proj_switch:"))
@@ -875,13 +1017,14 @@ async def proj_switch_callback(callback: types.CallbackQuery, state: FSMContext)
     proj_history = await db_service.get_project_history(uid)
     existing = await db_service.get_brief(uid) or {}
     projects = await db_service.list_projects(uid)
+    rules = await db_service.get_editorial_rules(uid)
     await state.update_data(history=proj_history, brief_answers=dict(existing), brief_paused_step=None)
     await state.set_state(BotStates.chatting)
-    brief_preview = format_brief(existing) or "(досье папки пока пустое)"
     await callback.message.answer(
-        i18n.get_text("project_switched", lang, slot_index=proj.slot_index, title=proj.title) + f"\n\n{brief_preview}",
+        i18n.get_text("project_switched", lang, slot_index=proj.slot_index, title=_clean_folder_title(proj.title, max_len=28))
+        + f"\n\n{format_brief_for_ui(existing)}",
         parse_mode="Markdown",
-        reply_markup=build_brief_and_project_kb(lang, proj, projects, show_restart=True),
+        reply_markup=build_project_hub_kb(lang, proj, projects, brief=existing, rules_count=len(rules)),
     )
 
 
@@ -907,15 +1050,11 @@ async def proj_new_callback(callback: types.CallbackQuery, state: FSMContext):
     await db_service.log_event(uid, "PROJECT_CREATED", f"proj:{new_proj.id}, slot:{new_proj.slot_index}, max:{max_cnt}")
     projects = await db_service.list_projects(uid)
     await state.update_data(history=[], brief_answers={}, brief_paused_step=None)
-    await state.set_state(BRIEF_STEPS[0])
+    await state.set_state(BotStates.chatting)
     await callback.message.answer(
         i18n.get_text("project_created", lang, slot_index=new_proj.slot_index, max_projects=max_cnt),
         parse_mode="Markdown",
-        reply_markup=cancel_kb(lang),
-    )
-    await callback.message.answer(
-        i18n.get_text(f"brief_q_{BRIEF_FIELDS[0]}", lang),
-        reply_markup=build_brief_and_project_kb(lang, new_proj, projects, show_restart=False),
+        reply_markup=build_project_hub_kb(lang, new_proj, projects, brief={}, rules_count=0),
     )
 
 
@@ -928,12 +1067,14 @@ async def proj_register_callback(callback: types.CallbackQuery, state: FSMContex
     pinned = None if reg_raw == "AUTO" else reg_raw
     proj = await db_service.set_project_pinned_register(uid, pinned)
     projects = await db_service.list_projects(uid)
+    existing = await db_service.get_brief(uid) or {}
+    rules = await db_service.get_editorial_rules(uid)
     await db_service.log_event(uid, "PROJECT_REGISTER_PINNED", f"proj:{proj.id if proj else 0}, reg:{reg_raw}")
     reg_label = _register_label(lang, pinned)
     await callback.message.answer(
         i18n.get_text("project_register_updated", lang, register_label=reg_label),
         parse_mode="Markdown",
-        reply_markup=build_brief_and_project_kb(lang, proj, projects, show_restart=True),
+        reply_markup=build_project_hub_kb(lang, proj, projects, brief=existing, rules_count=len(rules)),
     )
 
 
@@ -947,11 +1088,13 @@ async def proj_rules_callback(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(BotStates.waiting_for_editorial_rule)
     rules_text = "\n".join(f"{idx + 1}. {r}" for idx, r in enumerate(rules)) if rules else "(пока не заданы)"
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=i18n.get_text("btn_clear_editorial_policy", lang), callback_data="proj_rules_clear")],
-        [InlineKeyboardButton(text=i18n.get_text("btn_brief_back_chat", lang), callback_data="brief_back_chat")],
+        [
+            InlineKeyboardButton(text=i18n.get_text("btn_clear_editorial_policy", lang), callback_data="proj_rules_clear"),
+            InlineKeyboardButton(text=i18n.get_text("btn_back_to_folder", lang), callback_data="proj_hub"),
+        ],
     ])
     await callback.message.answer(
-        i18n.get_text("editorial_policy_card", lang, title=proj.title, rules_text=rules_text),
+        i18n.get_text("editorial_policy_card", lang, title=_clean_folder_title(proj.title, max_len=28), rules_text=rules_text),
         parse_mode="Markdown",
         reply_markup=kb,
     )
@@ -986,7 +1129,7 @@ async def editorial_rule_input_handler(message: types.Message, state: FSMContext
     await db_service.log_event(uid, "EDITORIAL_RULE_ADDED", rule_raw[:300])
     await state.set_state(BotStates.chatting)
     await message.answer(
-        i18n.get_text("editorial_rule_saved", lang, rule=rule_raw[:220], title=proj.title),
+        i18n.get_text("editorial_rule_saved", lang, rule=rule_raw[:220], title=_clean_folder_title(proj.title, max_len=28)),
         parse_mode="Markdown",
         reply_markup=main_kb(lang),
     )
@@ -1017,16 +1160,43 @@ async def _process_brief_text_input(message: types.Message, state: FSMContext, t
         await _dispatch_chat_text(message, state, text_input)
         return
 
-    answers[current_field] = "" if text_input.strip().lower() in BRIEF_SKIP_WORDS else text_input
+    cleaned_answer = "" if text_input.strip().lower() in BRIEF_SKIP_WORDS else text_input.strip()
+    if current_field == "channel" and cleaned_answer:
+        tg_handle = extract_tg_username(cleaned_answer)
+        if tg_handle:
+            snap = await fetch_public_tg_channel_snapshot(tg_handle, http_session=llm_service.http_session)
+            if snap:
+                if snap.get("voice_samples"):
+                    await db_service.save_voice_samples(uid, snap["voice_samples"])
+                cleaned_answer = f"{cleaned_answer}\n\n[АВТОСКАН ОТКРЫТОГО TELEGRAM-КАНАЛА]\n{snap['formatted_summary']}"
+                ads_cnt = snap.get("ads_filtered_count", 0)
+                ads_note = f" (отфильтровано рекламных: {ads_cnt})" if ads_cnt else ""
+                await db_service.log_event(
+                    uid,
+                    "TG_CHANNEL_SCANNED",
+                    f"@{snap['username']}, posts:{snap['posts_count']}, ads:{ads_cnt}",
+                )
+                await message.answer(
+                    i18n.get_text(
+                        "channel_scanned_ok",
+                        lang,
+                        username=snap["username"],
+                        title=snap["title"],
+                        posts_count=snap["posts_count"],
+                        ads_note=ads_note,
+                    ),
+                    parse_mode="Markdown",
+                )
+
+    answers[current_field] = cleaned_answer
     active_proj = await db_service.get_or_create_active_project(uid)
-    projects = await db_service.list_projects(uid)
     if step + 1 < len(BRIEF_STEPS):
         await state.update_data(brief_answers=answers)
         await db_service.save_brief(uid, answers)
         await state.set_state(BRIEF_STEPS[step + 1])
         await message.answer(
             i18n.get_text(f"brief_q_{BRIEF_FIELDS[step + 1]}", lang),
-            reply_markup=build_brief_and_project_kb(lang, active_proj, projects, show_restart=True),
+            reply_markup=brief_question_inline_kb(lang, show_restart=True),
         )
         return
 
@@ -1036,19 +1206,29 @@ async def _process_brief_text_input(message: types.Message, state: FSMContext, t
     await state.set_state(BotStates.chatting)
     await message.answer(i18n.get_text("brief_saved", lang), reply_markup=main_kb(lang))
 
-    # Автоматический «Холодный душ: Точка слива кассы» сразу после 5-го ответа брифа (0 кредитов за первый диагноз!)
+    # Проверка лимита ТОЛЬКО перед запуском 2-го платного LLM-рентгена (само редактирование брифа в SQLite всегда бесплатно!)
+    data = await state.get_data()
+    user = await db_service.get_user(uid)
+    is_unlim = await db_service.has_unlimited(uid)
+    cold_shower_already_used = bool(data.get("cold_shower_free_used"))
+    if cold_shower_already_used and user and not is_unlim and user.credits < 1:
+        await message.answer(i18n.get_text("no_credits", lang), parse_mode="Markdown", reply_markup=paywall_kb(lang))
+        return
+
+    # Автоматический «Продюсерский рентген проекта» сразу после 5-го ответа брифа (0 кредитов за первый диагноз!)
     wait_msg = await message.answer(i18n.get_text("brief_cold_shower_wait", lang), parse_mode="Markdown")
     try:
-        data = await state.get_data()
         history = await db_service.get_project_history(uid) or data.get("history", [])
+        all_user_model_texts = await db_service.get_all_user_model_texts(uid)
+        display_name = _clean_user_display_name(message.from_user)
         diagnosis = await generate_cold_shower_diagnosis(
             answers,
             history=history,
             pinned_register=active_proj.pinned_register,
+            all_user_model_texts=all_user_model_texts,
+            user_display_name=display_name,
+            rotation_seed=uid,
         )
-        user = await db_service.get_user(uid)
-        is_unlim = await db_service.has_unlimited(uid)
-        cold_shower_already_used = bool(data.get("cold_shower_free_used"))
         remaining_credits = user.credits if user else 2
         if cold_shower_already_used and user and not is_unlim and user.credits > 0:
             remaining_credits = await db_service.update_balance(uid, -1)
@@ -1063,7 +1243,7 @@ async def _process_brief_text_input(message: types.Message, state: FSMContext, t
             await wait_msg.delete()
         except Exception:
             pass
-        await send_smart_response(message, f"🔎 ТОЧКА СЛИВА КАССЫ (ПЕРВИЧНЫЙ ДИАГНОЗ):\n\n{diagnosis}")
+        await send_smart_response(message, f"🔎 ПРОДЮСЕРСКИЙ РЕНТГЕН ПРОЕКТА:\n\n{diagnosis}")
         await message.answer(
             i18n.get_text("brief_cold_shower_footer", lang, credits=remaining_credits),
             parse_mode="Markdown",
@@ -1763,6 +1943,45 @@ async def long_input_handler(message: types.Message, state: FSMContext):
     long_input_tasks[user_id] = asyncio.create_task(trigger_long_input_processing(message, state, user_id))
 
 
+CHAR_RANGE_RE = re.compile(r"(?i)\b(\d{2,5})\s*[-–—]\s*(\d{2,5})\s*(?:знак\w*|символ\w*)")
+CHAR_MAX_RE = re.compile(
+    r"(?i)(?:до|не\s+более|не\s+больше|максимум|макс\.?|лимит\w*|уложить\w*\s+в|в\s+пределах)\s*(\d{2,5})\s*(?:знак\w*|символ\w*)"
+)
+
+
+def _extract_explicit_char_limit(user_query: str, current_limit: int = 0) -> int:
+    """Детерминированно извлекает верхнюю границу лимита знаков (например, 1200-1500 знаков -> 1500)."""
+    q = user_query or ""
+    m_range = CHAR_RANGE_RE.search(q)
+    if m_range:
+        upper = int(m_range.group(2))
+        if 40 <= upper <= 20000:
+            return max(int(current_limit or 0), upper)
+    m_max = CHAR_MAX_RE.search(q)
+    if m_max:
+        val = int(m_max.group(1))
+        if 40 <= val <= 20000:
+            return int(current_limit or 0) or val
+    return int(current_limit or 0)
+
+
+def _extract_lead_hook(response_text: str) -> str:
+    """Извлекает первую смысловую строку/заход блока СТАЛО (или ответа) для <STORY_ARC_LEDGER>."""
+    txt = (response_text or "").strip()
+    m = HAS_STALO_BLOCK_RE.search(txt)
+    if m:
+        after = txt[m.end():].lstrip(" :\n—-")
+        for line in after.splitlines():
+            clean = line.strip(" «»\"'-•—")
+            if len(clean) >= 12:
+                return clean[:115]
+    for line in txt.splitlines():
+        clean = line.strip(" «»\"'-•—")
+        if len(clean) >= 12:
+            return clean[:115]
+    return txt[:115]
+
+
 async def process_ai_response(message: types.Message, state: FSMContext, user_query: str, image_data: dict = None):
     uid = message.from_user.id
     lang = i18n.user_lang(message.from_user)
@@ -1773,13 +1992,38 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     data = await state.get_data()
     is_unlim = await db_service.has_unlimited(uid)
 
-    # 1. Загружаем активную папку проекта, её изолированное досье, редполитику и историю
+    # 1. Загружаем активную папку проекта, её изолированное досье, редполитику, голос, историю и летопись дуги
     proj = await db_service.get_or_create_active_project(uid)
     brief = await db_service.get_brief(uid)
     dossier_text = format_brief(brief)
     editorial_rules = await db_service.get_editorial_rules(uid)
     proj_history = await db_service.get_project_history(uid)
     history = proj_history if proj_history else data.get("history", [])
+    voice_samples = await db_service.get_voice_samples(uid)
+    arc_ledger = await db_service.get_arc_ledger(uid)
+    all_user_model_texts = await db_service.get_all_user_model_texts(uid)
+    display_name = _clean_user_display_name(message.from_user)
+
+    # 1b. Автоскан публичного Telegram-канала из чата (0 LLM-токенов), если клиент кинул @username / t.me/...
+    tg_handle = extract_tg_username(user_query)
+    if tg_handle and f"@{tg_handle.lower()}" not in (dossier_text or "").lower():
+        snap = await fetch_public_tg_channel_snapshot(tg_handle, http_session=llm_service.http_session)
+        if snap:
+            if snap.get("voice_samples") and not voice_samples:
+                voice_samples = snap["voice_samples"]
+                await db_service.save_voice_samples(uid, voice_samples)
+            updated_brief = dict(brief or {})
+            prev_ch = (updated_brief.get("channel") or "").strip()
+            scan_block = f"[АВТОСКАН ОТКРЫТОГО TELEGRAM-КАНАЛА]\n{snap['formatted_summary']}"
+            updated_brief["channel"] = f"{prev_ch}\n\n{scan_block}".strip() if prev_ch else scan_block
+            await db_service.save_brief(uid, updated_brief)
+            brief = updated_brief
+            dossier_text = format_brief(brief)
+            await db_service.log_event(
+                uid,
+                "TG_CHANNEL_SCANNED",
+                f"@{snap['username']}, posts:{snap['posts_count']}, ads:{snap.get('ads_filtered_count', 0)}",
+            )
 
     # 2. Детерминированный перехват редполитики из реплик клиента (0 токенов)
     updated_rules = assistant_service.extract_editorial_rules_deterministic(user_query, editorial_rules)
@@ -1833,7 +2077,9 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         pinned_register=proj.pinned_register,
     )
 
-    # Детерминированные поправки к RouteDecision (защита от провокаций на выдумку цифр и инъекций)
+    # Детерминированные поправки к RouteDecision (лимит знаков, защита от выдумки цифр и инъекций)
+    decision.explicit_char_limit = _extract_explicit_char_limit(user_query, decision.explicit_char_limit)
+
     if re.search(
         r"(?i)(придумай\w*\s+(?:правдоподобн\w+\s+)?(?:кейс|цифр|статистик)|"
         r"выдумай\w*\s+(?:кейс|цифр)|цифр\s+(?:у\s+меня\s+)?пока\s+нет)",
@@ -1866,20 +2112,25 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
 
     await db_service.log_event(uid, "LEGO_ROUTE_DECISION", decision.model_dump_json())
 
-    # 5. Вычисляем is_free_meta, is_objection_grace и expected_credits_after
+    # 5. Вычисляем is_free_meta (без ложного срабатывания «нда» в слове «бренда»!), is_objection_grace и expected_credits_after
+    is_privacy_meta = (
+        len(user_query.strip()) <= 220
+        and decision.genre == "STRATEGY_QA"
+        and bool(
+            BRIEF_PRIVACY_WORD_RE.search(user_query)
+            or re.search(r"(?i)(опубликуете|всплыв[её]т|где\s+хранятся|кто\s+(?:видит|читает))", user_query)
+        )
+    )
     is_free_meta = (
         user.credits >= 1
         and not data.get("meta_question_free_used")
         and len(user_query.strip()) < 600
         and (
             decision.intent_type in ("PRODUCT_META_QA", "ABUSE_OR_OFFTOPIC")
-            or _is_meta_question(user_query)
-            or bool(re.search(r"(?i)(конфиденциальн|nda|н\.?д\.?а\.?|опубликуете|всплыв[её]т|где\s+хранятся)", user_query))
+            or (_is_meta_question(user_query) and decision.genre == "STRATEGY_QA")
+            or is_privacy_meta
         )
     )
-    if is_free_meta:
-        await state.update_data(meta_question_free_used=True)
-        await db_service.log_event(uid, "FREE_META_QUESTION", user_query[:300])
 
     is_objection_grace = False
     if not is_unlim and not is_free_meta and user.credits < 1:
@@ -1927,8 +2178,8 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             q_topic = BRIEF_LABELS.get(next_f, next_f)
             brief_status = (
                 f"[СИСТЕМА: Анкета брифа поставлена на паузу на вопросе {next_num}/5 («{q_topic}»). "
-                f"Сохранено {filled_num}/5 ответов в досье папки «{proj.title}». "
-                f"Если клиент спросит про анкету — поясни, что ответы сохранены и продолжить бриф с вопроса {next_num}/5 можно кнопкой «📋 Бриф».]"
+                f"Сохранено {filled_num}/5 ответов в досье папки «{_clean_folder_title(proj.title, 28)}». "
+                f"Если клиент спросит про анкету — поясни, что ответы сохранены и продолжить бриф с вопроса {next_num}/5 можно кнопкой «📂 Проект / Бриф».]"
             )
     elif data.get("brief_paused_step") is not None:
         paused_idx = int(data["brief_paused_step"])
@@ -1936,15 +2187,15 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         q_topic = BRIEF_LABELS.get(next_f, next_f)
         brief_status = (
             f"[СИСТЕМА: Анкета брифа поставлена на паузу на вопросе {paused_idx + 1}/5 («{q_topic}»). "
-            f"Сохранено 0/5 ответов в досье папки «{proj.title}». "
-            f"Если клиент спросит про анкету — поясни, что вернуться к брифу с вопроса {paused_idx + 1}/5 можно кнопкой «📋 Бриф».]"
+            f"Сохранено 0/5 ответов в досье папки «{_clean_folder_title(proj.title, 28)}». "
+            f"Если клиент спросит про анкету — поясни, что вернуться к брифу с вопроса {paused_idx + 1}/5 можно кнопкой «📂 Проект / Бриф».]"
         )
 
-    # 8. Сборка компактного системного промпта через LegoPromptBuilder v2.1 (без промежуточного литературного монолога)
+    # 8. Сборка компактного системного промпта через LegoPromptBuilder v2.2 (с ротацией палитр и летописью дуги)
     sys_prompt = LegoPromptBuilder.build(
         decision=decision,
         pinned_register=proj.pinned_register,
-        project_title=proj.title,
+        project_title=_clean_folder_title(proj.title, 28),
         dossier_text=dossier_text,
         editorial_rules=editorial_rules,
         project_history=history,
@@ -1954,6 +2205,11 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         brief_pause_status=brief_status,
         search_results=search_results,
         temp=user.temperature,
+        user_display_name=display_name,
+        all_user_model_texts=all_user_model_texts,
+        voice_samples=voice_samples,
+        arc_ledger=arc_ledger,
+        rotation_seed=uid,
     )
 
     failed = False
@@ -1994,6 +2250,16 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         if not failed:
             response_text = await polish_reply(llm_service, response_text, user_query)
             response_text = humanize_punctuation(response_text.replace("*", ""))
+            # Жёсткий пост-чек биллинга: если ответ содержит готовый боевой блок «СТАЛО:» при credits >= 1, он ОБЯЗАН списать 1 кредит
+            if is_free_meta and HAS_STALO_BLOCK_RE.search(response_text) and not is_objection_grace and user.credits >= 1:
+                is_free_meta = False
+                if not is_unlim:
+                    expected_credits_after = max(0, user.credits - 1)
+                await db_service.log_event(uid, "FREE_META_OVERRIDDEN_BY_STALO", f"genre:{decision.genre}")
+            elif is_free_meta:
+                await state.update_data(meta_question_free_used=True)
+                await db_service.log_event(uid, "FREE_META_QUESTION", user_query[:300])
+
             # Детерминированная защита финала при credits_after == 0: не провоцируем клиента на вопрос перед пейволлом
             if expected_credits_after <= 0 and response_text.rstrip().endswith("?"):
                 paragraphs = [p.strip() for p in response_text.strip().split("\n\n") if p.strip()]
@@ -2034,6 +2300,18 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         last_message_time=current_time,
     )
     await db_service.save_project_history(uid, new_history[-40:])
+
+    # Детерминированная запись в <STORY_ARC_LEDGER> (0 LLM-токенов) для долгой дистанции 15-30 разборов
+    if HAS_STALO_BLOCK_RE.search(response_text) or decision.genre != "STRATEGY_QA":
+        used_in_reply = extract_used_metaphors([{"role": "model", "parts": [{"text": response_text}]}])
+        await db_service.append_arc_ledger_entry(
+            uid,
+            {
+                "genre": decision.genre,
+                "lead_hook": _extract_lead_hook(response_text),
+                "metaphors": used_in_reply,
+            },
+        )
 
     if interaction_count % 5 == 0:
         asyncio.create_task(extract_and_save_memory(uid, new_history[-10:]))
