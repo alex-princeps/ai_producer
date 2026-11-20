@@ -8,6 +8,7 @@
 5. Выделяет 2 эталонных авторских поста (voice_samples) для <AUTHOR_VOICE_SAMPLES>.
 """
 import html as html_lib
+import os
 import re
 import aiohttp
 
@@ -175,13 +176,14 @@ def parse_tg_public_html(page_html: str, username: str, target_chars: int = 5000
 async def fetch_public_tg_channel_snapshot(
     username: str,
     http_session: aiohttp.ClientSession | None = None,
-    timeout_sec: float = 3.0,
+    timeout_sec: float = 5.0,
 ) -> dict | None:
-    """Асинхронно забирает публичный срез https://t.me/s/{username} с безопасным фоллбэком."""
+    """Асинхронно забирает публичный срез https://t.me/s/{username} (с поддержкой PROXY_URL) с безопасным фоллбэком."""
     clean_u = (username or "").lstrip("@").strip()
     if not clean_u:
         return None
     url = f"https://t.me/s/{clean_u}"
+    proxy_url = os.getenv("PROXY_URL") or None
     headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9",
@@ -189,7 +191,12 @@ async def fetch_public_tg_channel_snapshot(
     own_session = http_session is None
     session = http_session or aiohttp.ClientSession()
     try:
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout_sec)) as resp:
+        async with session.get(
+            url,
+            headers=headers,
+            proxy=proxy_url,
+            timeout=aiohttp.ClientTimeout(total=timeout_sec),
+        ) as resp:
             if resp.status != 200:
                 return None
             page_html = await resp.text()
