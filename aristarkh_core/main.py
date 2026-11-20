@@ -860,6 +860,20 @@ async def generate_cold_shower_diagnosis(
     return humanize_punctuation(diag.replace("*", "").strip())
 
 
+def _rules_count_label(count: int) -> str:
+    rem100 = count % 100
+    rem10 = count % 10
+    if 11 <= rem100 <= 14:
+        word = "правил"
+    elif rem10 == 1:
+        word = "правило"
+    elif 2 <= rem10 <= 4:
+        word = "правила"
+    else:
+        word = "правил"
+    return f"{count} {word}"
+
+
 async def open_project_hub(message: types.Message, state: FSMContext, lang: str, user_id: int | None = None):
     """
     Всегда открывает компактный Хаб «📂 Проект / Бриф» (Вариант 1В) —
@@ -884,7 +898,7 @@ async def open_project_hub(message: types.Message, state: FSMContext, lang: str,
         max_projects=max_proj,
         title=_clean_folder_title(active_proj.title, max_len=28),
         register_label=_register_label(lang, active_proj.pinned_register),
-        rules_count=len(rules),
+        rules_count=_rules_count_label(len(rules)),
         brief_text=format_brief_for_ui(existing),
     )
     await message.answer(
@@ -1950,19 +1964,26 @@ CHAR_MAX_RE = re.compile(
 
 
 def _extract_explicit_char_limit(user_query: str, current_limit: int = 0) -> int:
-    """Детерминированно извлекает верхнюю границу лимита знаков (например, 1200-1500 знаков -> 1500)."""
+    """
+    Детерминированно извлекает верхнюю границу лимита ЗНАКОВ (например, 1200-1500 знаков -> 1500).
+    Жёсткий предохранитель (фикс M1 Turn 9): если клиент НЕ упоминал знаки/символы (а писал про «25-30 секунд» Reels),
+    принудительно обнуляем ошибочный explicit_char_limit от Flash-роутера!
+    """
     q = user_query or ""
+    if not re.search(r"(?i)(?:знак|символ|char)", q):
+        return 0
     m_range = CHAR_RANGE_RE.search(q)
     if m_range:
         upper = int(m_range.group(2))
-        if 40 <= upper <= 20000:
+        if 80 <= upper <= 20000:
             return max(int(current_limit or 0), upper)
     m_max = CHAR_MAX_RE.search(q)
     if m_max:
         val = int(m_max.group(1))
-        if 40 <= val <= 20000:
-            return int(current_limit or 0) or val
-    return int(current_limit or 0)
+        if 80 <= val <= 20000:
+            return max(int(current_limit or 0), val)
+    cur = int(current_limit or 0)
+    return cur if cur >= 80 else 0
 
 
 def _extract_lead_hook(response_text: str) -> str:

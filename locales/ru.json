@@ -97,7 +97,7 @@
   "brief_paused_for_chat": "⏸ *Анкета брифа поставлена на паузу (уже введённые ответы сохранены в досье папки). Отвечаю по существу вашего вопроса:*",
   "brief_resumed_intro": "📋 Продолжаем продюсерский бриф с места остановки (в досье папки уже сохранено {filled}/5 ответов):",
   "brief_already_complete": "📋 **Активная папка проекта: {title}** ({slot_index}/{max_projects})\n🎯 **Оптика папки:** {register_label}\n\n{brief_text}",
-  "project_folder_card": "📂 **Папка #{slot_index} из {max_projects}: {title}**\n🎯 **Оптика:** {register_label}\n✏️ **Редполитика:** {rules_count} правил\n\n{brief_text}",
+  "project_folder_card": "📂 **Папка #{slot_index} из {max_projects}: {title}**\n🎯 **Оптика:** {register_label}\n✏️ **Редполитика:** {rules_count}\n\n{brief_text}",
   "btn_brief_fill": "📝 Заполнить бриф (5 вопросов)",
   "btn_brief_resume": "▶️ Продолжить бриф ({next_step}/5)",
   "btn_brief_update": "🔄 Обновить бриф (1/5)",
