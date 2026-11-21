@@ -332,12 +332,12 @@ class DatabaseService:
             niche_val = (answers.get("niche") or "").strip()
             if niche_val and (not db_proj.title or db_proj.title.startswith(("Проект №", "📁 "))):
                 cleaned_niche = re.sub(
-                    r"(?i)^(?:я\s+(?:продюсер|эксперт|основатель|владелец|директор|партн[её]р|руководитель|веду)[^.\n—-]{0,40}[.\n—-]+\s*)?"
+                    r"(?i)^(?:я\s+(?:продюсер|эксперт|основатель|владелец|директор|партн[её]р|руководитель|веду)[^.\n—]{0,60}[.\n—]+\s*)?"
                     r"(?:(?:первый|второй|текущий|мой|наш)\s+проект\s*[—:-]\s*)?",
                     "",
                     niche_val,
                 ).strip() or niche_val
-                raw_short = re.split(r"[.,;(\n—-]", cleaned_niche)[0].strip()
+                raw_short = re.split(r"[.,;(\n—]|\s+-\s+", cleaned_niche)[0].strip()
                 raw_short = re.sub(r"^[^\wА-Яа-яЁё]+", "", raw_short).strip()
                 words = raw_short.split()
                 clean_title = ""
@@ -350,7 +350,7 @@ class DatabaseService:
                 if not clean_title and raw_short:
                     clean_title = raw_short[:16].rstrip()
                 if clean_title:
-                    db_proj.title = clean_title
+                    db_proj.title = clean_title[0].upper() + clean_title[1:]
             db_proj.updated_at = datetime.utcnow()
             # Синхронно обновляем и старую таблицу briefs для обратной совместимости
             brief = await session.get(Brief, user_id) or Brief(user_id=user_id)
