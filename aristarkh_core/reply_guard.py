@@ -91,14 +91,81 @@ def _sanitize_deterministic(text: str, user_text: str = "") -> str:
     return text
 
 
-async def polish_reply(llm, text: str, user_text: str = "") -> str:
+RE_STALO_HEADER = re.compile(
+    r"(?m)^(?:#{1,4}\s*|\*\*|\[|>?\s*)?(?:БЫЛО\s*(?:->|→|—|-)\s*)?СТАЛО\b",
+    re.IGNORECASE,
+)
+RE_QUOTED_PHRASE = re.compile(r"[«\"']([^«»\"'\n]{3,45})[»\"']")
+RE_FORBID_RULE_HINT = re.compile(r"(?i)(запре[тщ]|не\s+использ|нельзя|без\s+слов|убер|стоп-слов|избега)")
+
+
+def extract_forbidden_phrases_from_rules(editorial_rules: list[str] | None) -> list[str]:
+    """Извлекает запрещённые клиентом фразы из правил редполитики (0 токенов)."""
+    phrases: list[str] = []
+    for rule in editorial_rules or []:
+        if not RE_FORBID_RULE_HINT.search(rule):
+            continue
+        for m in RE_QUOTED_PHRASE.finditer(rule):
+            p = m.group(1).strip()
+            if len(p) >= 4 and p.lower() not in {x.lower() for x in phrases}:
+                phrases.append(p)
+        # Также ловим перечисление через двоеточие: «запрещены слова: инвестиция в себя, последний вагон»
+        m_list = re.search(r"(?i)(?:запрещен\w*\s+слова|стоп-слова|не\s+используй\s+слова)\s*[:—-]\s*([^.\n;]+)", rule)
+        if m_list:
+            for item in m_list.group(1).split(","):
+                clean = item.strip(" «»\"'-")
+                if 4 <= len(clean) <= 45 and clean.lower() not in {x.lower() for x in phrases}:
+                    phrases.append(clean)
+    return phrases
+
+
+def find_editorial_stopwords_in_stalo(text: str, editorial_rules: list[str] | None) -> list[str]:
+    """Ловит «эффект розового слона» (упоминание запретного слова даже через отрицание внутри блока СТАЛО)."""
+    if not text or not editorial_rules:
+        return []
+    m = RE_STALO_HEADER.search(text)
+    target = text[m.end():] if m else text
+    # Отрезаем финальный мостик после визуальной отбивки • • •
+    if "• • •" in target:
+        target = target.split("• • •", 1)[0]
+    target_norm = target.lower().replace("ё", "е")
+    hits = []
+    for phrase in extract_forbidden_phrases_from_rules(editorial_rules):
+        p_norm = phrase.lower().replace("ё", "е")
+        # Сравниваем по корням слов (без последних 1-2 букв окончания для 2+ словных фраз)
+        words = [w for w in re.findall(r"[а-яa-z0-9]+", p_norm) if len(w) >= 3]
+        if not words:
+            continue
+        pat = r"\s+".join(re.escape(w[:-2] if len(w) >= 6 else (w[:-1] if len(w) >= 5 else w)) + r"[а-яa-z]*" for w in words)
+        if re.search(pat, target_norm):
+            hits.append(phrase)
+    return hits
+
+
+async def polish_reply(
+    llm,
+    text: str,
+    user_text: str = "",
+    editorial_rules: list[str] | None = None,
+) -> str:
     text = _sanitize_deterministic(text, user_text)
     problems = find_problems(text, user_text)
-    if not problems:
+    fix_instructions = [fix for _, _, fix in problems]
+
+    stop_hits = find_editorial_stopwords_in_stalo(text, editorial_rules)
+    if stop_hits:
+        joined_stops = ", ".join(f"«{s}»" for s in stop_hits)
+        fix_instructions.append(
+            f"внутри блока СТАЛО обнаружены запрещённые редполитикой клиента фразы ({joined_stops}): "
+            "перепиши только эти 1-2 предложения так, чтобы запрещённых слов НЕ было даже через отрицание («я не буду говорить про...»)"
+        )
+
+    if not fix_instructions:
         return text
-    logger.info(f"🧹 [ReplyGuard] Правим ответ: {[name for name, _, _ in problems]}")
-    edited = await llm.edit_text(EDIT_INSTRUCTION.format(problems="; ".join(fix for _, _, fix in problems)), text)
-    if edited and not find_problems(edited, user_text):
+
+    logger.info(f"🧹 [ReplyGuard] Правим ответ: {[name for name, _, _ in problems]} + stops={stop_hits}")
+    edited = await llm.edit_text(EDIT_INSTRUCTION.format(problems="; ".join(fix_instructions)), text)
+    if edited and not find_problems(edited, user_text) and not find_editorial_stopwords_in_stalo(edited, editorial_rules):
         return edited
     left = find_problems(edited or text, user_text)
-    return _strip(edited or text, left or problems)
+    return _strip(edited or text, left or problems) if (left or problems) else (edited or text)

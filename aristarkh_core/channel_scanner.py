@@ -45,13 +45,29 @@ EXTERNAL_MENTION_RE = re.compile(
 )
 
 
+REFERENCE_CONTEXT_RE = re.compile(
+    r"(?i)(ориентир\w*|референс\w*|конкурент\w*|нравит\w*\s+как|пример\w*\s+(?:канала|стиля|блога)|"
+    r"смотрю\s+на|как\s+у\s+канала|вдохновля\w*)"
+)
+
+
 def extract_tg_username(text: str | None) -> str | None:
+    """
+    Извлекает @username / t.me/{username} собственного канала клиента.
+    Игнорирует служебные хэндлы и каналы-ориентиры/конкуренты (контекст 65 знаков слева).
+    """
     if not text:
         return None
     for m in TG_HANDLE_RE.finditer(text):
         handle = (m.group(1) or m.group(2) or "").strip()
-        if handle and handle.lower() not in IGNORED_HANDLES:
-            return handle
+        if not handle or handle.lower() in IGNORED_HANDLES:
+            continue
+        left_ctx = text[max(0, m.start() - 65):m.start()]
+        right_ctx = text[m.end():min(len(text), m.end() + 40)]
+        if REFERENCE_CONTEXT_RE.search(left_ctx) or REFERENCE_CONTEXT_RE.search(right_ctx):
+            logger.info(f"📡 [ChannelScanner] Пропущен канал-ориентир/конкурент @{handle}")
+            continue
+        return handle
     return None
 
 

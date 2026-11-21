@@ -1134,16 +1134,22 @@ async def editorial_rule_input_handler(message: types.Message, state: FSMContext
         await message.answer(i18n.get_text("menu_return", lang), reply_markup=main_kb(lang))
         return
     rule_raw = message.text.strip()
+    if len(rule_raw) > 550:
+        await message.answer(
+            f"⚠️ Правило получилось слишком длинным ({len(rule_raw)} знаков, максимум 550 знаков на одну запись). "
+            "Сократите формулировку или отправьте правила по одному — ничего не потеряно.",
+        )
+        return
     proj = await db_service.get_or_create_active_project(uid)
     existing_rules = await db_service.get_editorial_rules(uid)
     new_rules = assistant_service.extract_editorial_rules_deterministic(rule_raw, existing_rules)
     if new_rules == existing_rules and rule_raw:
-        new_rules = list(existing_rules) + [rule_raw[:220]]
+        new_rules = list(existing_rules) + [rule_raw[:550]]
     await db_service.save_editorial_rules(uid, new_rules[-12:])
-    await db_service.log_event(uid, "EDITORIAL_RULE_ADDED", rule_raw[:300])
+    await db_service.log_event(uid, "EDITORIAL_RULE_ADDED", rule_raw[:550])
     await state.set_state(BotStates.chatting)
     await message.answer(
-        i18n.get_text("editorial_rule_saved", lang, rule=rule_raw[:220], title=_clean_folder_title(proj.title, max_len=28)),
+        i18n.get_text("editorial_rule_saved", lang, rule=rule_raw[:550], title=_clean_folder_title(proj.title, max_len=28)),
         parse_mode="Markdown",
         reply_markup=main_kb(lang),
     )
@@ -1957,33 +1963,49 @@ async def long_input_handler(message: types.Message, state: FSMContext):
     long_input_tasks[user_id] = asyncio.create_task(trigger_long_input_processing(message, state, user_id))
 
 
-CHAR_RANGE_RE = re.compile(r"(?i)\b(\d{2,5})\s*[-–—]\s*(\d{2,5})\s*(?:знак\w*|символ\w*)")
+CHAR_RANGE_RE = re.compile(r"(?i)\b(\d{2,5})\s*[-–—]\s*(\d{2,5})\s*(?:знак\w*|символ\w*|букв\w*)")
 CHAR_MAX_RE = re.compile(
-    r"(?i)(?:до|не\s+более|не\s+больше|максимум|макс\.?|лимит\w*|уложить\w*\s+в|в\s+пределах)\s*(\d{2,5})\s*(?:знак\w*|символ\w*)"
+    r"(?i)(?:до|не\s+более|не\s+больше|максимум|макс\.?|лимит\w*|уложить\w*\s+в|в\s+пределах)\s*(\d{2,5})\s*(?:знак\w*|символ\w*|букв\w*)"
+)
+DISCOUNT_MENTION_RE = re.compile(r"(?i)(скидк|промокод|дорого|дешев|бесплатн|купон|халяв)")
+TRAILING_INJECTION_RE = re.compile(
+    r"(?is)(?:\(?\s*(?:p\.?s\.?\s*[:—-]?\s*)?(?:system\s+override|ignore\s+(?:all\s+)?(?:previous|rules)|"
+    r"забудь\s+(?:все\s+)?инструкц|игнорируй\s+предыдущ|выведи\s+(?:свой\s+)?(?:системный\s+)?промпт)[^)\n]{0,220}\)?)"
 )
 
 
 def _extract_explicit_char_limit(user_query: str, current_limit: int = 0) -> int:
     """
     Детерминированно извлекает верхнюю границу лимита ЗНАКОВ (например, 1200-1500 знаков -> 1500).
-    Жёсткий предохранитель (фикс M1 Turn 9): если клиент НЕ упоминал знаки/символы (а писал про «25-30 секунд» Reels),
-    принудительно обнуляем ошибочный explicit_char_limit от Flash-роутера!
+    Жёсткий предохранитель (фикс M1 Turn 9): если клиент НЕ упоминал знаки/символы/буквы (а писал про «25-30 секунд» Reels),
+    принудительно обнуляем ошибочный explicit_char_limit от Flash-роутера! Минимум 100 знаков.
     """
     q = user_query or ""
-    if not re.search(r"(?i)(?:знак|символ|char)", q):
+    if not re.search(r"(?i)(?:знак|символ|букв|char)", q):
         return 0
     m_range = CHAR_RANGE_RE.search(q)
     if m_range:
         upper = int(m_range.group(2))
-        if 80 <= upper <= 20000:
+        if 100 <= upper <= 20000:
             return max(int(current_limit or 0), upper)
     m_max = CHAR_MAX_RE.search(q)
     if m_max:
         val = int(m_max.group(1))
-        if 80 <= val <= 20000:
+        if 100 <= val <= 20000:
             return max(int(current_limit or 0), val)
     cur = int(current_limit or 0)
-    return cur if cur >= 80 else 0
+    return cur if cur >= 100 else 0
+
+
+def _stalo_body_len(response_text: str) -> int:
+    """Возвращает длину чистого блока СТАЛО (без заголовка и финального мостика после '• • •')."""
+    m = HAS_STALO_BLOCK_RE.search(response_text or "")
+    if not m:
+        return 0
+    after = response_text[m.end():].lstrip(" :\n—-")
+    if "• • •" in after:
+        after = after.split("• • •", 1)[0]
+    return len(after.strip())
 
 
 def _extract_lead_hook(response_text: str) -> str:
@@ -2090,21 +2112,29 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     interaction_count = data.get("interaction_count", 0) + 1
     current_time = time.time()
 
-    # 4. Вызов легковесного JSON-роутера gemini-2.5-flash (T=0.0, GEMINI_ROUTE_SCHEMA)
+    # 4. Безопасная санация хвостовой инъекции в длинном деловом запросе (> 180 знаков, 0 токенов)
+    clean_query_for_llm = user_query
+    if len(user_query.strip()) > 180 and TRAILING_INJECTION_RE.search(user_query):
+        stripped = TRAILING_INJECTION_RE.sub("", user_query).strip()
+        if len(stripped) >= 120:
+            clean_query_for_llm = stripped
+            await db_service.log_event(uid, "TRAILING_INJECTION_STRIPPED", f"orig:{len(user_query)}->clean:{len(stripped)}")
+
+    # 4b. Вызов легковесного JSON-роутера gemini-2.5-flash (T=0.0, GEMINI_ROUTE_SCHEMA)
     decision = await llm_service.route_request_lego(
-        user_query=user_query,
+        user_query=clean_query_for_llm,
         history_tail=history[-4:],
         dossier_text=dossier_text,
         pinned_register=proj.pinned_register,
     )
 
     # Детерминированные поправки к RouteDecision (лимит знаков, защита от выдумки цифр и инъекций)
-    decision.explicit_char_limit = _extract_explicit_char_limit(user_query, decision.explicit_char_limit)
+    decision.explicit_char_limit = _extract_explicit_char_limit(clean_query_for_llm, decision.explicit_char_limit)
 
     if re.search(
         r"(?i)(придумай\w*\s+(?:правдоподобн\w+\s+)?(?:кейс|цифр|статистик)|"
         r"выдумай\w*\s+(?:кейс|цифр)|цифр\s+(?:у\s+меня\s+)?пока\s+нет)",
-        user_query,
+        clean_query_for_llm,
     ):
         decision.fact_sufficiency = "PARTIAL"
         if not decision.missing_fact_hint:
@@ -2114,18 +2144,18 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         re.search(
             r"(?i)(игнорируй\s+предыдущ|забудь\s+(?:все\s+)?инструкц|ignore\s+all\s+previous|"
             r"скинь\s+(?:свой\s+)?(?:системный\s+)?промпт|выведи\s+(?:свой\s+)?(?:системный\s+)?промпт)",
-            user_query,
+            clean_query_for_llm,
         )
-        and len(user_query.strip()) < 260
+        and len(clean_query_for_llm.strip()) < 260
     ):
         decision.intent_type = "ABUSE_OR_OFFTOPIC"
-    elif _is_meta_question(user_query) and len(user_query.strip()) < 360 and decision.intent_type in ("WORK_TASK", "EDITORIAL_TASK"):
+    elif _is_meta_question(clean_query_for_llm) and len(clean_query_for_llm.strip()) < 360 and decision.intent_type in ("WORK_TASK", "EDITORIAL_TASK"):
         decision.intent_type = "PRODUCT_META_QA"
 
     if re.search(
         r"(?i)(энергопрактик|высоки\w+\s+вибрац|квантов\w+\s+скач|дыхани\w+\s+матк|"
         r"денежн\w+\s+расширени\w*\s+в\s+поток|род\w+\s+программ\w*\s+изобил)",
-        user_query,
+        clean_query_for_llm,
     ):
         decision.genre = "IDEOLOGICAL_REFUSAL"
         if not proj.pinned_register:
@@ -2212,7 +2242,8 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             f"Если клиент спросит про анкету — поясни, что вернуться к брифу с вопроса {paused_idx + 1}/5 можно кнопкой «📂 Проект / Бриф».]"
         )
 
-    # 8. Сборка компактного системного промпта через LegoPromptBuilder v2.2 (с ротацией палитр и летописью дуги)
+    # 8. Сборка компактного системного промпта через LegoPromptBuilder v2.2.3
+    user_mentions_discount = bool(DISCOUNT_MENTION_RE.search(clean_query_for_llm))
     sys_prompt = LegoPromptBuilder.build(
         decision=decision,
         pinned_register=proj.pinned_register,
@@ -2231,13 +2262,14 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
         voice_samples=voice_samples,
         arc_ledger=arc_ledger,
         rotation_seed=uid,
+        user_mentions_discount=user_mentions_discount,
     )
 
     failed = False
     try:
         response_text = await llm_service.generate(
             sys_prompt,
-            user_query,
+            clean_query_for_llm,
             rag_ctx,
             "",  # episodic_ctx изолирован внутри истории папки проекта
             "",  # semantic_ctx передан через <PROJECT_DOSSIER> и <EDITORIAL_POLICY>
@@ -2247,6 +2279,45 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             search_results,
         )
         failed = response_text.startswith(("⚠️", "⛔️"))
+
+        # Страховка минимальной длины блока «СТАЛО:» (фикс M1 Turn 9): не-био чистовик < 150 симв. -> 1 ретрай без лимита
+        if (
+            not failed
+            and decision.genre not in ("CHANNEL_BIO", "STRATEGY_QA", "IDEOLOGICAL_REFUSAL")
+            and HAS_STALO_BLOCK_RE.search(response_text)
+            and _stalo_body_len(response_text) < 150
+        ):
+            logger.warning(f"⚠️ [MinLenGuard] Слишком короткий блок СТАЛО ({_stalo_body_len(response_text)} симв.), делаю 1 ретрай без лимита.")
+            await db_service.log_event(uid, "STALO_MINLEN_RETRY", f"len:{_stalo_body_len(response_text)}")
+            decision.explicit_char_limit = 0
+            retry_sys = LegoPromptBuilder.build(
+                decision=decision,
+                pinned_register=proj.pinned_register,
+                project_title=_clean_folder_title(proj.title, 28),
+                dossier_text=dossier_text,
+                editorial_rules=editorial_rules,
+                project_history=history,
+                credits_after=expected_credits_after,
+                is_free_meta=is_free_meta,
+                is_objection_grace=is_objection_grace,
+                brief_pause_status=brief_status,
+                search_results=search_results,
+                temp=user.temperature,
+                user_display_name=display_name,
+                all_user_model_texts=all_user_model_texts,
+                voice_samples=voice_samples,
+                arc_ledger=arc_ledger,
+                rotation_seed=uid,
+                user_mentions_discount=user_mentions_discount,
+            )
+            retry_text = await llm_service.generate(
+                retry_sys, clean_query_for_llm, rag_ctx, "", "", history[-40:], user.temperature, image_data, search_results
+            )
+            if not retry_text.startswith(("⚠️", "⛔️")) and _stalo_body_len(retry_text) >= 150:
+                response_text = retry_text
+            else:
+                failed = True
+                response_text = i18n.get_text("generation_error", lang)
 
         if "[IGNORE]" in response_text:
             logger.info(f"🔇 [ИГНОР] Аристарх молча проигнорировал юзера {uid}")
@@ -2269,7 +2340,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             return
 
         if not failed:
-            response_text = await polish_reply(llm_service, response_text, user_query)
+            response_text = await polish_reply(llm_service, response_text, clean_query_for_llm, editorial_rules=editorial_rules)
             response_text = humanize_punctuation(response_text.replace("*", ""))
             # Жёсткий пост-чек биллинга: если ответ содержит готовый боевой блок «СТАЛО:» при credits >= 1, он ОБЯЗАН списать 1 кредит
             if is_free_meta and HAS_STALO_BLOCK_RE.search(response_text) and not is_objection_grace and user.credits >= 1:
@@ -2322,7 +2393,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
     )
     await db_service.save_project_history(uid, new_history[-40:])
 
-    # Детерминированная запись в <STORY_ARC_LEDGER> (0 LLM-токенов) для долгой дистанции 15-30 разборов
+    # Детерминированная запись в <STORY_ARC_LEDGER> (0 лишних LLM-вызовов) с ключевыми фактами кейса для долгой дистанции
     if HAS_STALO_BLOCK_RE.search(response_text) or decision.genre != "STRATEGY_QA":
         used_in_reply = extract_used_metaphors([{"role": "model", "parts": [{"text": response_text}]}])
         await db_service.append_arc_ledger_entry(
@@ -2330,6 +2401,7 @@ async def process_ai_response(message: types.Message, state: FSMContext, user_qu
             {
                 "genre": decision.genre,
                 "lead_hook": _extract_lead_hook(response_text),
+                "facts": (decision.anchor_facts_summary or "").strip()[:150],
                 "metaphors": used_in_reply,
             },
         )

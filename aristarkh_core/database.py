@@ -218,7 +218,7 @@ class DatabaseService:
         for r in rules:
             s = str(r).strip()
             if s and s not in clean_rules:
-                clean_rules.append(s[:240])
+                clean_rules.append(s[:600])
         clean_rules = clean_rules[-12:]
         async with self.async_session() as session:
             db_proj = await session.get(ProjectFolder, proj.id)
@@ -265,6 +265,7 @@ class DatabaseService:
                 "n": entry.get("n") or next_n,
                 "genre": str(entry.get("genre", "POST"))[:32],
                 "lead_hook": str(entry.get("lead_hook", "")).strip()[:120],
+                "facts": str(entry.get("facts", "")).strip()[:150],
                 "metaphors": list(entry.get("metaphors") or [])[:5],
             }
             items.append(entry_clean)
@@ -330,7 +331,13 @@ class DatabaseService:
                 setattr(db_proj, f, val)
             niche_val = (answers.get("niche") or "").strip()
             if niche_val and (not db_proj.title or db_proj.title.startswith(("Проект №", "📁 "))):
-                raw_short = re.split(r"[.,;(\n—-]", niche_val)[0].strip()
+                cleaned_niche = re.sub(
+                    r"(?i)^(?:я\s+(?:продюсер|эксперт|основатель|владелец|директор|партн[её]р|руководитель|веду)[^.\n—-]{0,40}[.\n—-]+\s*)?"
+                    r"(?:(?:первый|второй|текущий|мой|наш)\s+проект\s*[—:-]\s*)?",
+                    "",
+                    niche_val,
+                ).strip() or niche_val
+                raw_short = re.split(r"[.,;(\n—-]", cleaned_niche)[0].strip()
                 raw_short = re.sub(r"^[^\wА-Яа-яЁё]+", "", raw_short).strip()
                 words = raw_short.split()
                 clean_title = ""
