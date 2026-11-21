@@ -349,6 +349,11 @@ class DatabaseService:
                         break
                 if not clean_title and raw_short:
                     clean_title = raw_short[:16].rstrip()
+                clean_title = re.sub(
+                    r"(?i)(?:\s+(?:для|и|в|на|с|по|из|к|о|от|про|без|или|а|но))+$",
+                    "",
+                    clean_title,
+                ).strip()
                 if clean_title:
                     db_proj.title = clean_title[0].upper() + clean_title[1:]
             db_proj.updated_at = datetime.utcnow()
